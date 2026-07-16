@@ -29,9 +29,15 @@ class TgInterface:
         self.last_report: CycleReport | None = None
         self._register()
 
+    def _allowed(self, m: Message) -> bool:
+        """TG_CHAT_ID 화이트리스트 — 다른 사용자의 명령은 조용히 무시."""
+        return str(m.chat.id) == str(self.s.tg_chat_id)
+
     def _register(self):
         @self.dp.message(Command("start"))
         async def start(m: Message):
+            if not self._allowed(m):
+                return
             await m.answer(
                 f"defi-agent 연결됨 (chat_id: `{m.chat.id}`)\n"
                 f"모드: {'DRY_RUN' if self.s.dry_run else '🔴 LIVE'}\n"
@@ -39,6 +45,8 @@ class TgInterface:
 
         @self.dp.message(Command("status"))
         async def status(m: Message):
+            if not self._allowed(m):
+                return
             r = self.last_report
             if not r:
                 await m.answer("아직 사이클 실행 전")
@@ -53,6 +61,8 @@ class TgInterface:
 
         @self.dp.message(Command("pnl"))
         async def pnl(m: Message):
+            if not self._allowed(m):
+                return
             now = int(time.time())
             series = await self.store.equity_series(now - 30 * 86400)
             if len(series) < 2:
@@ -68,16 +78,22 @@ class TgInterface:
 
         @self.dp.message(Command("pause"))
         async def pause(m: Message):
+            if not self._allowed(m):
+                return
             self.rb.paused = True
             await m.answer("⏸ 일시정지 — 신규 액션 중단, 관측은 계속")
 
         @self.dp.message(Command("resume"))
         async def resume(m: Message):
+            if not self._allowed(m):
+                return
             self.rb.paused = False
             await m.answer("▶️ 재개")
 
         @self.dp.message(Command("events"))
         async def events(m: Message):
+            if not self._allowed(m):
+                return
             rows = await self.store.recent_events(10)
             if not rows:
                 await m.answer("이벤트 없음")

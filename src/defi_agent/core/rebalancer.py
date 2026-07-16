@@ -82,14 +82,18 @@ class Rebalancer:
                         f"⏸ 진입 보류: HL 증거금 ${hs.account_value:,.0f} < 필요 ${need_margin:,.0f} "
                         f"(LP ${deployable:,.0f} 기준) — 입금 확인되면 자동 진입")
                     return r
-                await self._act(r, "mint",
-                                f"신규 LP 진입 ${deployable:,.0f} (±{self.s.lp_range_pct}%)",
-                                lambda: self.lp.mint_centered(deployable))
-                pos = self.lp.find_position()
-                if pos or self.s.dry_run:
-                    target = pos.weth_amount + pos.owed_weth if pos else deployable / 2 / st.price
-                    await self._act(r, "hedge", f"초기 헤지 숏 {target:.4f} ETH",
-                                    lambda: self.hedge.set_target_short(target))
+                minted = await self._act(r, "mint",
+                                         f"신규 LP 진입 ${deployable:,.0f} (±{self.s.lp_range_pct}%)",
+                                         lambda: self.lp.mint_centered(deployable))
+                if not minted:
+                    return r
+                pos = self._find_position_retry()
+                # RPC 지연으로 포지션 조회가 늦어도 헤지는 반드시 건다 —
+                # ±35% 레인지의 WETH 가치비율 ~0.42로 추정 (언헤지 방치가 더 위험)
+                target = (pos.weth_amount + pos.owed_weth) if pos \
+                    else deployable * 0.42 / st.price
+                await self._act(r, "hedge", f"초기 헤지 숏 {target:.4f} ETH",
+                                lambda: self.hedge.set_target_short(target))
             else:
                 r.alerts.append(f"포지션·예치 가능 자금 없음 (지갑 ${deployable:,.0f})")
             return r
@@ -136,17 +140,30 @@ class Rebalancer:
                 r.alerts.append(f"⚠️ HL 실효 레버리지 {eff_lev:.1f}x — 증거금 보충 권장")
         return r
 
-    async def _act(self, r: CycleReport, kind: str, desc: str, fn):
+    async def _act(self, r: CycleReport, kind: str, desc: str, fn) -> bool:
+        """액션 실행 + 기록. 성공 여부를 반환해 호출부가 플로우를 제어할 수 있게 한다."""
         prefix = "[DRY_RUN] " if self.s.dry_run else ""
         try:
             fn()
             r.actions.append(prefix + desc)
             await self.store.log_event(kind, prefix + desc)
+            return True
         except Exception as e:  # noqa: BLE001
             msg = f"{desc} 실패: {e}"
             log.exception(msg)
             r.alerts.append("🚨 " + msg)
             await self.store.log_event("error", msg)
+            return False
+
+    def _find_position_retry(self, tries: int = 3, wait_s: float = 2.0):
+        """mint 직후 RPC 노드 지연으로 포지션이 안 보일 수 있어 재시도."""
+        for i in range(tries):
+            pos = self.lp.find_position()
+            if pos:
+                return pos
+            if i < tries - 1:
+                time.sleep(wait_s)
+        return None
 
     def _do_rerange(self, pos, usd_total: float):
         self.lp.close_position(pos)

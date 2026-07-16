@@ -64,8 +64,25 @@ async def daily_report_loop(tg: TgInterface, hour_kst: int):
         await tg.daily_report()
 
 
+def acquire_single_instance_lock():
+    """같은 머신 이중 실행 방지 — 두 에이전트가 돌면 nonce 충돌 + 이중 헤지."""
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 47821))
+    except OSError:
+        raise SystemExit("defi-agent가 이미 실행 중입니다 (포트 47821 점유). "
+                         "중복 실행은 nonce 충돌·이중 헤지를 일으킵니다.")
+    return sock  # 참조 유지 필수 — GC되면 락 해제
+
+
 async def amain():
+    lock = acquire_single_instance_lock()  # noqa: F841 — 프로세스 수명 동안 유지
     s = load_settings()
+    if not s.wallet_private_key:
+        raise SystemExit("운용 지갑 키 없음 — `python -m defi_agent.keys set wallet` 먼저 실행")
+    if not s.dry_run and not s.hl_api_private_key:
+        raise SystemExit("LIVE 모드에 HL API 키 필요 — `python -m defi_agent.keys set hl-api`")
     log.info("defi-agent 기동 — 모드: %s", "DRY_RUN" if s.dry_run else "🔴 LIVE")
 
     client = BaseClient(s)

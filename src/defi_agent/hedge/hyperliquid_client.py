@@ -92,6 +92,7 @@ class HyperliquidHedge:
             return None
         result = self.exchange.market_open(st.coin, not is_sell, size, None, 0.01)
         log.info("HL 주문 결과: %s", result)
+        self._raise_on_order_error(result)
         return result
 
     def close_all(self) -> dict | None:
@@ -101,4 +102,18 @@ class HyperliquidHedge:
         if self.s.dry_run or self.exchange is None:
             log.info("[DRY_RUN] HL 숏 전량 청산 %.4f %s", st.short_size, st.coin)
             return None
-        return self.exchange.market_close(st.coin)
+        result = self.exchange.market_close(st.coin)
+        self._raise_on_order_error(result)
+        return result
+
+    @staticmethod
+    def _raise_on_order_error(result: dict | None):
+        """HL은 주문 거부도 HTTP 200으로 돌려준다 — statuses의 error를 명시적으로 확인."""
+        if not result:
+            return
+        if result.get("status") != "ok":
+            raise RuntimeError(f"HL 주문 실패: {result}")
+        statuses = (result.get("response", {}).get("data", {}) or {}).get("statuses", [])
+        errors = [x["error"] for x in statuses if isinstance(x, dict) and "error" in x]
+        if errors:
+            raise RuntimeError(f"HL 주문 거부: {'; '.join(errors)}")

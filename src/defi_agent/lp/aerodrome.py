@@ -111,9 +111,10 @@ class AerodromeLP:
 
     # ── 실행 ────────────────────────────────────────────────
     def _approve_if_needed(self, token, spender: str, amount_raw: int):
+        """필요량만 approve — 무제한 승인은 스펜더 컨트랙트 침해 시 지갑 전체가 노출된다."""
         cur = token.functions.allowance(self.c.address, Web3.to_checksum_address(spender)).call()
         if cur < amount_raw:
-            self.c.send(token.functions.approve(Web3.to_checksum_address(spender), 2**256 - 1))
+            self.c.send(token.functions.approve(Web3.to_checksum_address(spender), amount_raw))
 
     def swap(self, token_in: str, amount_in_raw: int, min_out_raw: int) -> str | None:
         token_out = C.USDC if token_in.lower() == C.WETH.lower() else C.WETH
@@ -180,7 +181,7 @@ class AerodromeLP:
         )
         return self.c.send(self.npm.functions.mint(params))
 
-    def close_position(self, pos: Position, slippage: float = 0.01) -> None:
+    def close_position(self, pos: Position, slippage: float = 0.02) -> None:
         """유동성 전량 제거 + 수수료 수령 + NFT 소각."""
         st = self.pool_state()
         a0, a1 = clmath.position_amounts(pos.liquidity, st.sqrt_price_x96, pos.tick_lower, pos.tick_upper)
