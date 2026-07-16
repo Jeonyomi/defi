@@ -14,6 +14,7 @@ from .config import load_settings
 from .core.rebalancer import Rebalancer
 from .core.state import Store
 from .hedge.hyperliquid_client import HyperliquidHedge
+from .lp import math as clmath
 from .lp.aerodrome import AerodromeLP
 from .tg.bot import TgInterface
 
@@ -104,7 +105,8 @@ async def amain():
         f"`{datetime.datetime.now(KST).strftime('%m-%d %H:%M')} KST`\n\n"
         f"⚙️ *설정*\n"
         f"├ 풀 Aerodrome WETH/USDC `{pool[:10]}…`\n"
-        f"├ LP 한도 ${s.lp_max_usdc:,.0f} · 레인지 ±{s.lp_range_pct}%\n"
+        f"├ LP 한도 ${s.lp_max_usdc:,.0f} · 레인지 ±{s.lp_range_pct}% "
+        f"_(집중도 m={clmath.concentration_from_pct(s.lp_range_pct):.1f})_\n"
         f"├ 헤지 {s.hl_coin} ≤{s.hl_max_leverage}x\n"
         f"└ 사이클 {s.rebalance_interval_sec // 60}분 · 정기 상태 {status_every} · "
         f"리포트 {s.daily_report_hour_kst}시")

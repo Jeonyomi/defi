@@ -96,3 +96,31 @@ def range_position_ratio(tick: int, tick_lower: int, tick_upper: int) -> float:
     if half <= 0:
         return 1.0
     return abs(tick - mid) / half
+
+
+def concentration_multiplier(lo_price: float, hi_price: float) -> float:
+    """레인지 [lo, hi]의 집중도 m — 같은 자본으로 풀레인지 대비 몇 배 유동성인가.
+
+    m = 1 / (1 - (lo/hi)^(1/4)).  IL(감마)이 m배로 커지므로 전략 성립 조건
+    `수수료 APY > m × 풀레인지 IL`의 좌우변을 가르는 값이다.
+    검증: ±10% -> 20.4 (Uniswap 공식 문서의 ~20x와 일치).
+    """
+    if lo_price <= 0 or hi_price <= lo_price:
+        return 1.0
+    denom = 1.0 - (lo_price / hi_price) ** 0.25
+    return 1.0 / denom if denom > 0 else float("inf")
+
+
+def concentration_from_pct(range_pct: float) -> float:
+    """대칭 ±range_pct 레인지의 집중도 m. ±35% -> 5.99 (m<=3 아님)."""
+    if range_pct <= 0 or range_pct >= 100:
+        return 1.0
+    return concentration_multiplier(1 - range_pct / 100, 1 + range_pct / 100)
+
+
+def pct_for_concentration(m: float) -> float:
+    """목표 집중도 m을 만족하는 대칭 레인지 반폭 %. m=3 -> ±67.0%."""
+    if m <= 1:
+        return 99.9
+    r = (1 - 1 / m) ** 4
+    return (1 - r) / (1 + r) * 100
