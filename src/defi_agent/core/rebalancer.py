@@ -114,9 +114,15 @@ class Rebalancer:
         if r.lp_delta > 0:
             drift = abs(hs.short_size - r.lp_delta) / r.lp_delta * 100
             if drift > self.s.hedge_drift_pct:
-                await self._act(r, "hedge",
-                                f"재헤지: 숏 {hs.short_size:.4f} → {r.lp_delta:.4f} ETH (드리프트 {drift:.1f}%)",
-                                lambda: self.hedge.set_target_short(r.lp_delta))
+                adj_notional = abs(r.lp_delta - hs.short_size) * hs.mark_px
+                if adj_notional < 16:  # set_target_short의 $15 스킵 임계 + 가격차 버퍼
+                    r.alerts.append(
+                        f"재헤지 보류: 조정분 ${adj_notional:.0f}이 HL 최소주문($15) 미만 "
+                        f"(드리프트 {drift:.1f}%, 잔여 노출 ±${adj_notional:.0f} 수준) — 커지면 자동 실행")
+                else:
+                    await self._act(r, "hedge",
+                                    f"재헤지: 숏 {hs.short_size:.4f} → {r.lp_delta:.4f} ETH (드리프트 {drift:.1f}%)",
+                                    lambda: self.hedge.set_target_short(r.lp_delta))
 
         # 4) 수수료 수령
         owed_usd = pos.owed_weth * st.price + pos.owed_usdc
