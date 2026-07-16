@@ -80,7 +80,8 @@ class Rebalancer:
             lp_weth=pos.weth_amount if pos else 0, lp_usdc=pos.usdc_amount if pos else 0,
             owed_weth=pos.owed_weth if pos else 0, owed_usdc=pos.owed_usdc if pos else 0,
             hedge_size=hs.short_size, hedge_upnl=hs.unrealized_pnl, hl_account=hs.account_value,
-            wallet_weth=wallet_weth, wallet_usdc=wallet_usdc, equity=r.equity)
+            wallet_weth=wallet_weth, wallet_usdc=wallet_usdc, equity=r.equity,
+            mark_px=hs.mark_px)
 
         r.paused = self.paused
         if self.paused:

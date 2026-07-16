@@ -16,9 +16,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
     price REAL, lp_weth REAL, lp_usdc REAL, owed_weth REAL, owed_usdc REAL,
     hedge_size REAL, hedge_upnl REAL, hl_account REAL,
     wallet_weth REAL, wallet_usdc REAL,
-    equity REAL                  -- 총자산 (USD)
+    equity REAL,                 -- 총자산 (USD)
+    mark_px REAL                 -- HL mark price (외부 참조가, 변동성 계산용)
 );
 """
+
+# 기존 DB에 없는 컬럼을 덧붙인다 (ALTER는 중복 시 에러이므로 존재 확인 후 실행).
+MIGRATIONS = {
+    "mark_px": "ALTER TABLE snapshots ADD COLUMN mark_px REAL",
+}
 
 
 class Store:
@@ -28,6 +34,11 @@ class Store:
     async def init(self):
         async with aiosqlite.connect(self.path) as db:
             await db.executescript(SCHEMA)
+            cur = await db.execute("PRAGMA table_info(snapshots)")
+            have = {r[1] for r in await cur.fetchall()}
+            for col, ddl in MIGRATIONS.items():
+                if col not in have:
+                    await db.execute(ddl)
             await db.commit()
 
     async def log_event(self, kind: str, detail: str):
@@ -37,7 +48,7 @@ class Store:
 
     async def snapshot(self, **kw):
         cols = ("price lp_weth lp_usdc owed_weth owed_usdc hedge_size hedge_upnl "
-                "hl_account wallet_weth wallet_usdc equity").split()
+                "hl_account wallet_weth wallet_usdc equity mark_px").split()
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 f"INSERT OR REPLACE INTO snapshots (ts,{','.join(cols)}) "
@@ -52,10 +63,10 @@ class Store:
             return await cur.fetchall()
 
     async def edge_series(self, since_ts: int) -> list[tuple]:
-        """LP 경제성 측정용 (ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc)."""
+        """LP 경제성 측정용 (ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc, mark_px)."""
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(
-                "SELECT ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc "
+                "SELECT ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc, mark_px "
                 "FROM snapshots WHERE ts >= ? ORDER BY ts", (since_ts,))
             return await cur.fetchall()
 

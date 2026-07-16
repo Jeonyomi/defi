@@ -18,7 +18,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from ..config import Settings
-from ..core.analytics import LpEdge, compute_edge
+from ..core.analytics import MIN_WINDOW_H, LpEdge, compute_edge
 from ..core.rebalancer import Rebalancer, CycleReport
 from ..core.state import Store
 from ..lp.math import concentration_from_pct
@@ -65,6 +65,7 @@ class TgInterface:
         self.s = settings
         self.rb = rebalancer
         self.store = store
+        self._vol_cache: tuple[float, tuple[float, int]] | None = None
         self.bot = Bot(token=settings.tg_bot_token) if settings.tg_bot_token else None
         self.dp = Dispatcher()
         self.last_report: CycleReport | None = None
@@ -105,11 +106,23 @@ class TgInterface:
             label = "입출금 후 " + label
         return f"  _{label} {pct:+.2f}%_"
 
+    def _vol_ref(self) -> tuple[float, int] | None:
+        """30일 실현 변동성. 캔들 조회는 느리고 30일 sigma는 분 단위로 안 변하므로 1h 캐시."""
+        now = time.time()
+        if self._vol_cache and now - self._vol_cache[0] < 3600:
+            return self._vol_cache[1]
+        v = self.rb.hedge.realized_vol(days=30)
+        if v[1] < 30:
+            return self._vol_cache[1] if self._vol_cache else None
+        self._vol_cache = (now, v)
+        return v
+
     async def _edge(self) -> LpEdge | None:
         """LP 레그 경제성 (수수료 vs 감마손실). 실패해도 상태 표시를 막지 않는다."""
         try:
             rows = await self.store.edge_series(int(time.time()) - 7 * 24 * 3600)
-            return compute_edge(rows, concentration_from_pct(self.s.lp_range_pct))
+            return compute_edge(rows, concentration_from_pct(self.s.lp_range_pct),
+                                self._vol_ref())
         except Exception:
             return None
 
@@ -122,15 +135,17 @@ class TgInterface:
             "positive": "수수료가 감마손실을 이김",
             "negative": "감마손실이 수수료를 초과 — 레인지 조정으론 해결 안 됨",
             "marginal": "오차범위 내 — 판정 보류",
-            "unknown": "표본 부족",
+            "unknown": f"관측 {e.window_h:.0f}h — 판정에 {MIN_WINDOW_H:.0f}h 필요",
         }[e.verdict]
+        lo, hi = e.vol * (1 - e.vol_err), e.vol * (1 + e.vol_err)
+        src = "HL 30d" if e.vol_src == "hl-30d" else "풀가격 폴백·과소추정"
         return [
             "",
-            f"🧮 *LP 경제성* {icon} _({e.window_h:.1f}h, m={e.m:.1f})_",
+            f"🧮 *LP 경제성* {icon} _(수수료 {e.window_h:.1f}h, m={e.m:.1f})_",
             f"├ 수수료 {e.fee_apr * 100:+.1f}% · 감마 {-e.gamma_apr * 100:+.1f}% "
             f"→ *순 {e.net_apr * 100:+.1f}% APR*",
-            f"├ 변동성 {e.vol * 100:.0f}% vs 손익분기 {e.breakeven_vol * 100:.0f}% "
-            f"_(레인지 무관)_",
+            f"├ 변동성 {e.vol * 100:.0f}% _({lo * 100:.0f}~{hi * 100:.0f}%, {src})_",
+            f"├ 손익분기 {e.breakeven_vol * 100:.0f}% _(레인지 무관)_",
             f"└ _{note}_",
         ]
 

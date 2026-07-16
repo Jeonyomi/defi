@@ -86,6 +86,25 @@ class HyperliquidHedge:
         except Exception:  # noqa: BLE001
             return 0.0
 
+    def realized_vol(self, days: int = 30, interval: str = "1h") -> tuple[float, int]:
+        """ETH 실현 변동성(연율)을 HL 캔들에서 측정. 반환 (vol, 표본수).
+
+        감마손실(LVR)은 외부 시장가격 기준으로 정의되므로 풀 slot0가 아니라
+        HL mark를 쓴다. 그리고 에이전트 스냅샷(10분×N시간)이 아니라 캔들을 쓰는
+        이유는 표본수다 — 30d/1h면 n=720이라 통계오차 ~3%로 부호 판정이 서지만,
+        11h 스냅샷은 n=82에 그 시간대의 우연한 변동성일 뿐이다.
+        """
+        import time
+
+        from ..core.analytics import realized_vol as _rv
+        try:
+            now = int(time.time())
+            cs = self.info.candles_snapshot(
+                self.s.hl_coin, interval, (now - days * 86400) * 1000, now * 1000)
+            return _rv([(int(x["t"]) // 1000, float(x["c"])) for x in cs])
+        except Exception:  # noqa: BLE001
+            return 0.0, 0
+
     def set_target_short(self, target_size: float) -> dict | None:
         """숏 수량을 target_size(코인 단위)로 수렴. 반환: 주문 결과 or None(변경 없음/DRY)."""
         st = self.state()
