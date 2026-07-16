@@ -68,6 +68,26 @@ class LpEdge:
     vol_err: float          # 변동성 상대표준오차
     vol_src: str            # "hl-30d" (권장) | "pool" (폴백, slot0는 sigma 과소추정)
 
+    # --- 실측 레그 (모델 아님) ---
+    # 창 시작 구성을 HODL했을 때 대비 LP 원금의 차이 = 실현 IL.
+    # 수수료는 CL에서 원금에 자동복리되지 않고 owed로 따로 쌓이므로 원금과
+    # 깨끗이 분리된다. 단 이 값은 **경로의존적**이다 — 가격이 창 시작으로
+    # 되돌아오면 IL도 0으로 되돌아간다. 따라서 APR로 연율화하지 않는다.
+    fee_usd: float          # 창 구간 실측 수수료 ($)
+    il_usd: float           # 창 구간 실측 IL ($, 음수 = 손실)
+    px_chg: float           # 창 구간 가격 변화율 (IL의 경로의존성 해석용)
+
+    @property
+    def coverage(self) -> float | None:
+        """수수료 / |실측 IL|. >1이면 수수료가 IL을 덮는다. 부호 판정의 실측판.
+
+        모델(fee_apr vs gamma_apr)과 독립적인 교차확인용. 둘이 어긋나면
+        모델 가정이나 표본을 의심해야 한다.
+        """
+        if self.il_usd >= 0:
+            return None  # IL이 양수 = 아직 손실 아님, 비율 무의미
+        return self.fee_usd / abs(self.il_usd)
+
     @property
     def verdict(self) -> str:
         """부호 판정. 근거가 부족하면 단정하지 않는다."""
@@ -123,17 +143,25 @@ def compute_edge(rows: list[tuple], m: float,
     수수료가 실측된(owed>0) 구간만 유효하다. 재배치/collect가 끼면 owed가
     0으로 리셋되므로, 마지막 단조증가 구간만 잘라 쓴다.
     """
-    pts = [r for r in rows if r[1] and r[1] > 0]
+    # LP가 없는 행(부트스트랩/청산 구간)은 IL 기준선이 될 수 없다.
+    pts = [r for r in rows if r[1] and r[1] > 0 and r[4] and r[4] > 0]
     if len(pts) < 3:
         return None
 
     def fee_usd(r) -> float:
         return r[2] * r[1] + r[3]
 
-    # owed가 감소하면 collect/재배치 -> 그 이후 구간만 사용
+    # 구간 절단 조건 두 가지:
+    #  1) owed 감소 -> collect/재배치로 수수료가 회수됨
+    #  2) LP 원금 급변 -> mint/재배치로 구성이 바뀌어 HODL 기준선이 무효
+    # 둘 중 나중 것 이후만 쓴다. 가격 이동만으로도 구성은 서서히 변하므로
+    # 임계는 넉넉히 잡되(50%), 재배치는 통째로 갈아끼우므로 확실히 걸린다.
     start = 0
     for i in range(1, len(pts)):
         if fee_usd(pts[i]) < fee_usd(pts[i - 1]) - 1e-12:
+            start = i
+        prev, cur = pts[i - 1][4], pts[i][4]
+        if prev > 0 and abs(cur - prev) / prev > 0.5:
             start = i
     seg = pts[start:]
     if len(seg) < 3:
@@ -149,6 +177,11 @@ def compute_edge(rows: list[tuple], m: float,
 
     d_fee = fee_usd(seg[-1]) - fee_usd(seg[0])
     fee = d_fee / lp_usd * (8760.0 / h)
+
+    # 실측 IL: 창 시작 구성(W0, U0)을 그대로 들고 있었을 때 대비 LP 원금.
+    p0, p1 = seg[0][1], seg[-1][1]
+    hodl = seg[0][4] * p1 + seg[0][5]
+    il = (seg[-1][4] * p1 + seg[-1][5]) - hodl
 
     # sigma는 HL 캔들(vol_ref)이 정답. 못 받으면 풀 slot0로 폴백하되
     # 표시에 드러내 판정을 신뢰하지 않게 한다.
@@ -166,4 +199,6 @@ def compute_edge(rows: list[tuple], m: float,
         window_h=h, samples=n, fee_apr=fee, vol=vol, gamma_apr=g,
         net_apr=fee - g, m=m, pool_yield=py,
         breakeven_vol=breakeven_vol(py), vol_err=err, vol_src=vol_src,
+        fee_usd=d_fee, il_usd=il,
+        px_chg=(p1 / p0 - 1.0) if p0 > 0 else 0.0,
     )

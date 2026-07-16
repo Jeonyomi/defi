@@ -146,7 +146,24 @@ class TgInterface:
             f"→ *순 {e.net_apr * 100:+.1f}% APR*",
             f"├ 변동성 {e.vol * 100:.0f}% _({lo * 100:.0f}~{hi * 100:.0f}%, {src})_",
             f"├ 손익분기 {e.breakeven_vol * 100:.0f}% _(레인지 무관)_",
+        ] + TgInterface._coverage_lines(e) + [
             f"└ _{note}_",
+        ]
+
+    @staticmethod
+    def _coverage_lines(e: LpEdge) -> list[str]:
+        """실측 IL 대비 수수료 커버리지. 모델(감마 APR)과 독립적인 교차확인.
+
+        경로의존적이라 APR로 안 바꾸고 누적 $와 비율로만 보여준다.
+        """
+        cov = e.coverage
+        if cov is None:
+            return [f"├ 실측 IL ${e.il_usd:+.4f} _(가격 {e.px_chg * 100:+.1f}%, 아직 손실 아님)_"]
+        mark = "✅" if cov >= 1.0 else "🔴"
+        return [
+            f"├ 실측 수수료 ${e.fee_usd:.4f} / IL ${e.il_usd:+.4f} "
+            f"→ *커버리지 {cov:.2f}x* {mark}",
+            f"├ _가격 {e.px_chg * 100:+.1f}% 경로 — 되돌아오면 IL도 축소_",
         ]
 
     def _status_text(self, r: CycleReport, chg: tuple[float, float, bool] | None = None,
