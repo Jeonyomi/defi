@@ -31,6 +31,13 @@ class CycleReport:
     lp_delta: float = 0.0
     range_ratio: float = 0.0
     funding_apr: float = 0.0
+    owed_usd: float = 0.0       # 미수령 LP 수수료 (collect staticcall 실측)
+    hl_account: float = 0.0     # HL 증거금
+    hedge_upnl: float = 0.0
+    wallet_usd: float = 0.0
+    eff_lev: float = 0.0        # 헤지 노셔널 / 증거금
+    drift_pct: float = 0.0      # |숏-LP델타| / LP델타
+    paused: bool = False
     actions: list[str] = field(default_factory=list)
     alerts: list[str] = field(default_factory=list)
 
@@ -58,7 +65,15 @@ class Rebalancer:
             r.lp_delta = pos.weth_amount + pos.owed_weth
             r.lp_value = (pos.weth_amount + pos.owed_weth) * st.price + pos.usdc_amount + pos.owed_usdc
             r.range_ratio = pos.range_ratio
-        r.equity = (r.lp_value + wallet_weth * st.price + wallet_usdc + hs.account_value)
+            r.owed_usd = pos.owed_weth * st.price + pos.owed_usdc
+        r.wallet_usd = wallet_weth * st.price + wallet_usdc
+        r.hl_account = hs.account_value
+        r.hedge_upnl = hs.unrealized_pnl
+        r.equity = r.lp_value + r.wallet_usd + hs.account_value
+        if r.lp_delta > 0:
+            r.drift_pct = abs(hs.short_size - r.lp_delta) / r.lp_delta * 100
+        if hs.account_value > 0:
+            r.eff_lev = hs.short_size * hs.mark_px / hs.account_value
 
         await self.store.snapshot(
             price=st.price,
@@ -67,6 +82,7 @@ class Rebalancer:
             hedge_size=hs.short_size, hedge_upnl=hs.unrealized_pnl, hl_account=hs.account_value,
             wallet_weth=wallet_weth, wallet_usdc=wallet_usdc, equity=r.equity)
 
+        r.paused = self.paused
         if self.paused:
             r.alerts.append("일시정지 상태 — 관측만 수행")
             return r
@@ -112,7 +128,7 @@ class Rebalancer:
 
         # 3) 델타 드리프트 재헤지
         if r.lp_delta > 0:
-            drift = abs(hs.short_size - r.lp_delta) / r.lp_delta * 100
+            drift = r.drift_pct
             if drift > self.s.hedge_drift_pct:
                 adj_notional = abs(r.lp_delta - hs.short_size) * hs.mark_px
                 if adj_notional < 16:  # set_target_short의 $15 스킵 임계 + 가격차 버퍼
@@ -125,7 +141,7 @@ class Rebalancer:
                                     lambda: self.hedge.set_target_short(r.lp_delta))
 
         # 4) 수수료 수령
-        owed_usd = pos.owed_weth * st.price + pos.owed_usdc
+        owed_usd = r.owed_usd
         if owed_usd > 50:
             await self._act(r, "collect", f"수수료 수령 ${owed_usd:.2f}",
                             lambda: self.lp.collect_fees(pos))
@@ -137,7 +153,7 @@ class Rebalancer:
         # 경보: 증거금 부족 (예산 규칙: HL 증거금 >= 헤지 노셔널의 60% = LP의 30%)
         notional = hs.short_size * hs.mark_px
         if notional > 0 and hs.account_value > 0:
-            eff_lev = notional / hs.account_value
+            eff_lev = r.eff_lev
             if eff_lev > 2.5:
                 r.alerts.append(
                     f"🚨 HL 증거금 부족: 실효 {eff_lev:.1f}x (노셔널 ${notional:,.0f} / "

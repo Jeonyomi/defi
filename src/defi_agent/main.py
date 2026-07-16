@@ -50,7 +50,8 @@ async def rebalance_loop(rb: Rebalancer, tg: TgInterface, interval: int):
             import time as _t
             if _t.time() - last_err_notify > 4 * 3600:
                 last_err_notify = _t.time()
-                await tg.notify(f"🚨 사이클 에러 (이후 동일 에러 알림은 4h 쿨다운): {e}")
+                await tg.notify(f"🚨 *사이클 에러*\n`{e}`\n"
+                                f"_다음 사이클에 자동 재시도 · 동일 에러는 4h 쿨다운_")
         await asyncio.sleep(interval)
 
 
@@ -97,10 +98,16 @@ async def amain():
 
     rb = Rebalancer(s, lp, hedge, store)
     tg = TgInterface(s, rb, store)
-    await tg.notify(f"🚀 defi-agent 기동 ({'DRY_RUN' if s.dry_run else 'LIVE'})\n"
-                    f"풀: Aerodrome WETH/USDC `{pool[:10]}…`\n"
-                    f"한도: ${s.lp_max_usdc:,.0f} · 레인지 ±{s.lp_range_pct}% · "
-                    f"헤지 {s.hl_coin} ≤{s.hl_max_leverage}x")
+    status_every = (f"{s.status_notify_min}분마다" if s.status_notify_min else "꺼짐")
+    await tg.notify(
+        f"🚀 *defi-agent 기동* · {'DRY_RUN' if s.dry_run else '🔴 LIVE'}\n"
+        f"`{datetime.datetime.now(KST).strftime('%m-%d %H:%M')} KST`\n\n"
+        f"⚙️ *설정*\n"
+        f"├ 풀 Aerodrome WETH/USDC `{pool[:10]}…`\n"
+        f"├ LP 한도 ${s.lp_max_usdc:,.0f} · 레인지 ±{s.lp_range_pct}%\n"
+        f"├ 헤지 {s.hl_coin} ≤{s.hl_max_leverage}x\n"
+        f"└ 사이클 {s.rebalance_interval_sec // 60}분 · 정기 상태 {status_every} · "
+        f"리포트 {s.daily_report_hour_kst}시")
 
     tasks = [
         asyncio.create_task(rebalance_loop(rb, tg, s.rebalance_interval_sec)),

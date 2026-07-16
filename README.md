@@ -120,6 +120,16 @@ HL_TESTNET=false
 TG_POLLING=false            # 같은 토큰을 다른 봇이 폴링 중이면 반드시 false
 ```
 
+선택 항목(기본값으로도 동작):
+
+```ini
+REBALANCE_INTERVAL_SEC=600  # 사이클 주기
+STATUS_NOTIFY_MIN=60        # 정기 상태 알림 간격(분). 0이면 비활성.
+                            # 사이클에 얹어 보내므로 실제 간격은 사이클 단위로 올림된다
+                            # (예: 45분 설정 + 600초 사이클 → 실제 50분)
+DAILY_REPORT_HOUR_KST=9     # 일일 리포트 발송 시각
+```
+
 참고: `~/quant/.env`가 존재하면 자동으로 함께 읽는다(프로젝트 .env가 우선).
 없는 PC에서는 위 항목을 프로젝트 .env에 전부 채우면 된다.
 

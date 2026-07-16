@@ -40,6 +40,7 @@ class Settings:
     tg_bot_token: str
     tg_chat_id: str
     rebalance_interval_sec: int
+    status_notify_min: int
     daily_report_hour_kst: int
     db_path: str
 
@@ -76,6 +77,9 @@ def load_settings() -> Settings:
         tg_bot_token=env("TG_BOT_TOKEN", "", "TELEGRAM_BOT_TOKEN"),
         tg_chat_id=env("TG_CHAT_ID", "", "TELEGRAM_ALLOWED_USER_ID"),
         rebalance_interval_sec=int(env("REBALANCE_INTERVAL_SEC", "600")),
+        # 주기 상태 알림 간격(분). 0이면 비활성 — 액션·경보 알림만 발송.
+        # 사이클(REBALANCE_INTERVAL_SEC)에 얹혀 발송되므로 실제 간격은 사이클 단위로 올림된다.
+        status_notify_min=int(env("STATUS_NOTIFY_MIN", "60")),
         daily_report_hour_kst=int(env("DAILY_REPORT_HOUR_KST", "9")),
         # 주의: quant의 DB_PATH와 공유 금지 — DEFI_DB_PATH만 인식
         db_path=env("DEFI_DB_PATH", str(Path(__file__).resolve().parents[2] / "defi_agent.db")),
