@@ -51,6 +51,14 @@ class Store:
                 "SELECT ts, equity FROM snapshots WHERE ts >= ? ORDER BY ts", (since_ts,))
             return await cur.fetchall()
 
+    async def edge_series(self, since_ts: int) -> list[tuple]:
+        """LP 경제성 측정용 (ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc)."""
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc "
+                "FROM snapshots WHERE ts >= ? ORDER BY ts", (since_ts,))
+            return await cur.fetchall()
+
     async def recent_events(self, n: int = 10) -> list[tuple[int, str, str]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(

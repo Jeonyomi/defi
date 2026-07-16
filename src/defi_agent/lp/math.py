@@ -101,9 +101,14 @@ def range_position_ratio(tick: int, tick_lower: int, tick_upper: int) -> float:
 def concentration_multiplier(lo_price: float, hi_price: float) -> float:
     """레인지 [lo, hi]의 집중도 m — 같은 자본으로 풀레인지 대비 몇 배 유동성인가.
 
-    m = 1 / (1 - (lo/hi)^(1/4)).  IL(감마)이 m배로 커지므로 전략 성립 조건
-    `수수료 APY > m × 풀레인지 IL`의 좌우변을 가르는 값이다.
+    m = 1 / (1 - (lo/hi)^(1/4)).
     검증: ±10% -> 20.4 (Uniswap 공식 문서의 ~20x와 일치).
+
+    주의 — m은 수익 레버가 아니다. 레인지 안에 있는 동안 수수료와 감마손실이
+    **둘 다 정확히 m배**로 스케일한다 (수치검증: ±10% vs ±35%에서 손실비 3.40x,
+    m비 3.41x). 따라서 손익 부호는 m과 무관하고, breakeven 변동성은
+    sqrt(8 × 풀레인지 수수료수익률)로 m이 소거된다 (analytics.breakeven_vol 참조).
+    m을 키우면 레인지 이탈 확률만 늘어 부호가 음수일 때 손실만 증폭된다.
     """
     if lo_price <= 0 or hi_price <= lo_price:
         return 1.0

@@ -18,8 +18,10 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from ..config import Settings
+from ..core.analytics import LpEdge, compute_edge
 from ..core.rebalancer import Rebalancer, CycleReport
 from ..core.state import Store
+from ..lp.math import concentration_from_pct
 
 log = logging.getLogger(__name__)
 
@@ -103,8 +105,37 @@ class TgInterface:
             label = "입출금 후 " + label
         return f"  _{label} {pct:+.2f}%_"
 
+    async def _edge(self) -> LpEdge | None:
+        """LP 레그 경제성 (수수료 vs 감마손실). 실패해도 상태 표시를 막지 않는다."""
+        try:
+            rows = await self.store.edge_series(int(time.time()) - 7 * 24 * 3600)
+            return compute_edge(rows, concentration_from_pct(self.s.lp_range_pct))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _edge_lines(e: LpEdge | None) -> list[str]:
+        if e is None:
+            return []
+        icon = {"positive": "✅", "negative": "🔴", "marginal": "🟡", "unknown": "⏳"}[e.verdict]
+        note = {
+            "positive": "수수료가 감마손실을 이김",
+            "negative": "감마손실이 수수료를 초과 — 레인지 조정으론 해결 안 됨",
+            "marginal": "오차범위 내 — 판정 보류",
+            "unknown": "표본 부족",
+        }[e.verdict]
+        return [
+            "",
+            f"🧮 *LP 경제성* {icon} _({e.window_h:.1f}h, m={e.m:.1f})_",
+            f"├ 수수료 {e.fee_apr * 100:+.1f}% · 감마 {-e.gamma_apr * 100:+.1f}% "
+            f"→ *순 {e.net_apr * 100:+.1f}% APR*",
+            f"├ 변동성 {e.vol * 100:.0f}% vs 손익분기 {e.breakeven_vol * 100:.0f}% "
+            f"_(레인지 무관)_",
+            f"└ _{note}_",
+        ]
+
     def _status_text(self, r: CycleReport, chg: tuple[float, float, bool] | None = None,
-                     title: str = "상태") -> str:
+                     title: str = "상태", edge: LpEdge | None = None) -> str:
         out = [
             f"📊 *{title}* · {self._mode()}",
             f"`{_kst(r.ts)} KST`",
@@ -134,6 +165,7 @@ class TgInterface:
             f"├ 펀딩 24h {r.funding_apr:+.1f}% APR {'✅' if r.funding_apr >= 0 else '⚠️'}",
             f"└ 헤지 uPnL {'+' if r.hedge_upnl >= 0 else '-'}${abs(r.hedge_upnl):,.2f}",
         ]
+        out += self._edge_lines(edge)
         return "\n".join(out)
 
     def _action_text(self, a: str, r: CycleReport) -> str:
@@ -167,7 +199,7 @@ class TgInterface:
             if not r:
                 await m.answer("아직 사이클 실행 전")
                 return
-            await m.answer(self._status_text(r, await self._change(24)),
+            await m.answer(self._status_text(r, await self._change(24), edge=await self._edge()),
                            parse_mode="Markdown")
 
         @self.dp.message(Command("pnl"))
@@ -268,14 +300,16 @@ class TgInterface:
         if r.ts - self._status_last < every:
             return
         self._status_last = r.ts
-        await self.notify(self._status_text(r, await self._change(24), title="정기 상태"))
+        await self.notify(self._status_text(r, await self._change(24), title="정기 상태",
+                                            edge=await self._edge()))
 
     async def daily_report(self):
         r = self.last_report
         if not r:
             return
         self._status_last = r.ts  # 리포트 직후 정기 상태가 겹쳐 나가지 않도록
-        await self.notify(self._status_text(r, await self._change(24), title="일일 리포트"))
+        await self.notify(self._status_text(r, await self._change(24), title="일일 리포트",
+                                            edge=await self._edge()))
 
     async def run_polling(self):
         """명령 폴링 — 기본 비활성 (TG_POLLING=true일 때만).
