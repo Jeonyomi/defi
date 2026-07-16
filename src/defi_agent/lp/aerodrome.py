@@ -96,6 +96,9 @@ class AerodromeLP:
             if spacing != self.s.lp_tick_spacing or liq == 0:
                 continue
             a0, a1 = clmath.position_amounts(liq, st.sqrt_price_x96, tl, tu)
+            sim = self.simulate_collect(tid)
+            if sim is not None:
+                owed0, owed1 = sim
             return Position(
                 token_id=tid, tick_lower=tl, tick_upper=tu, liquidity=liq,
                 weth_amount=a0 / 10**C.WETH_DECIMALS, usdc_amount=a1 / 10**C.USDC_DECIMALS,
@@ -103,6 +106,20 @@ class AerodromeLP:
                 range_ratio=clmath.range_position_ratio(st.tick, tl, tu),
             )
         return None
+
+    def simulate_collect(self, token_id: int) -> tuple[int, int] | None:
+        """실제 미수령 수수료를 staticcall로 조회. 실패 시 None.
+
+        positions()의 tokensOwed는 mint/burn/collect로 포지션을 건드릴 때만 갱신되어
+        보유 중에는 계속 0으로 읽힌다. NPM.collect는 내부에서 pool.burn(0) poke를
+        먼저 수행하므로, eth_call로 시뮬레이션하면 상태 변경·가스 없이 실수치를 얻는다.
+        """
+        try:
+            return self.npm.functions.collect((
+                token_id, self.c.address, MAX_UINT128, MAX_UINT128)).call({"from": self.c.address})
+        except Exception:  # noqa: BLE001
+            log.warning("수수료 staticcall 실패 — positions() 값으로 대체", exc_info=True)
+            return None
 
     def wallet_balances(self) -> tuple[float, float]:
         w = self.weth.functions.balanceOf(self.c.address).call() / 10**C.WETH_DECIMALS
