@@ -45,6 +45,20 @@ class HyperliquidHedge:
             self.exchange = Exchange(wallet, api_url,
                                      account_address=settings.hl_account_address)
 
+    def ensure_leverage(self):
+        """거래소 측 레버리지 설정을 HL_MAX_LEVERAGE로 강제 (이중 방어).
+
+        HL의 코인별 기본 설정(ETH cross 20x)은 초기 증거금만 노셔널/20로 잡아
+        과대 주문을 거래소가 막아주지 않는다. 3x로 내리면 노셔널 ≤ 증거금×3을
+        HL 자체가 강제한다. 포지션 보유 중에도 안전하게 변경 가능."""
+        if self.exchange is None:
+            return
+        lev = max(1, int(self.s.hl_max_leverage))
+        res = self.exchange.update_leverage(lev, self.s.hl_coin, is_cross=True)
+        if res.get("status") != "ok":
+            raise RuntimeError(f"레버리지 설정 실패: {res}")
+        log.info("HL 레버리지 설정: %s cross %dx", self.s.hl_coin, lev)
+
     def state(self) -> HedgeState:
         coin = self.s.hl_coin
         user = self.info.user_state(self.s.hl_account_address)

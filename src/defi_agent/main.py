@@ -91,6 +91,7 @@ async def amain():
     log.info("풀 검증 완료: %s", pool)
 
     hedge = HyperliquidHedge(s)
+    hedge.ensure_leverage()  # 거래소 측 레버리지 상한 강제 (LIVE에서만 유효)
     store = Store(s.db_path)
     await store.init()
 
