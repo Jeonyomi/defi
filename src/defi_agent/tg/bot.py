@@ -103,7 +103,7 @@ class TgInterface:
         # 데이터가 24h에 못 미치면 '24h'라고 쓰지 않는다 (실제 구간을 표기)
         label = "24h" if span_h >= 20 else f"{span_h:.0f}h"
         if flow:  # 입출금으로 베이스라인이 리셋됐음을 숨기지 않는다
-            label = "입출금 후 " + label
+            label = "입금 이후 " + label
         return f"  _{label} {pct:+.2f}%_"
 
     def _vol_ref(self) -> tuple[float, int] | None:
@@ -128,42 +128,53 @@ class TgInterface:
 
     @staticmethod
     def _edge_lines(e: LpEdge | None) -> list[str]:
+        """LP가 돈을 벌고 있는지 한 블록으로.
+
+        용어를 쓰지 않는다: 감마손실 -> '가격변동 손실', 커버리지 -> '몇 %를 메움',
+        변동성/손익분기 -> '출렁임'/'버틸 수 있는 한계'. m은 판정과 무관하므로
+        (부호가 m에 안 걸린다 — analytics 참조) 본문에서 뺐다.
+        """
         if e is None:
             return []
         icon = {"positive": "✅", "negative": "🔴", "marginal": "🟡", "unknown": "⏳"}[e.verdict]
-        note = {
-            "positive": "수수료가 감마손실을 이김",
-            "negative": "감마손실이 수수료를 초과 — 레인지 조정으론 해결 안 됨",
-            "marginal": "오차범위 내 — 판정 보류",
-            "unknown": f"관측 {e.window_h:.0f}h — 판정에 {MIN_WINDOW_H:.0f}h 필요",
+        head = {
+            "positive": "수수료가 손실보다 큼 — 벌고 있음",
+            "negative": "손실이 수수료보다 큼 — 잃고 있음",
+            "marginal": "수수료와 손실이 비슷 — 판정 보류",
+            "unknown": f"데이터 {e.window_h:.0f}시간 — 판정하려면 {MIN_WINDOW_H:.0f}시간 필요",
         }[e.verdict]
-        lo, hi = e.vol * (1 - e.vol_err), e.vol * (1 + e.vol_err)
-        src = "HL 30d" if e.vol_src == "hl-30d" else "풀가격 폴백·과소추정"
-        return [
+        out = [
             "",
-            f"🧮 *LP 경제성* {icon} _(수수료 {e.window_h:.1f}h, m={e.m:.1f})_",
-            f"├ 수수료 {e.fee_apr * 100:+.1f}% · 감마 {-e.gamma_apr * 100:+.1f}% "
-            f"→ *순 {e.net_apr * 100:+.1f}% APR*",
-            f"├ 변동성 {e.vol * 100:.0f}% _({lo * 100:.0f}~{hi * 100:.0f}%, {src})_",
-            f"├ 손익분기 {e.breakeven_vol * 100:.0f}% _(레인지 무관)_",
+            f"🧮 *LP 수지* {icon} _{e.window_h:.0f}시간 관측_",
+            f"├ *{head}*",
         ] + TgInterface._coverage_lines(e) + [
-            f"└ _{note}_",
+            f"├ 1년 기준: 수수료 {e.fee_apr * 100:+.0f}% "
+            f"− 가격변동 {e.gamma_apr * 100:.0f}% = *{e.net_apr * 100:+.0f}%*",
+            f"├ ETH 출렁임 {e.vol * 100:.0f}% · 버틸 수 있는 한계 "
+            f"{e.breakeven_vol * 100:.0f}%",
         ]
+        if e.vol_src != "hl-30d":
+            out.append("├ _출렁임 수치 불안정 — 참고만_")
+        if e.verdict == "negative":
+            out.append("└ _범위를 넓히거나 좁혀도 안 바뀜_")
+        else:
+            out[-1] = "└" + out[-1][1:]
+        return out
 
     @staticmethod
     def _coverage_lines(e: LpEdge) -> list[str]:
-        """실측 IL 대비 수수료 커버리지. 모델(감마 APR)과 독립적인 교차확인.
+        """실제로 번 돈 vs 잃은 돈. 모델(APR 추정)과 독립적인 실측 교차확인.
 
         경로의존적이라 APR로 안 바꾸고 누적 $와 비율로만 보여준다.
         """
         cov = e.coverage
         if cov is None:
-            return [f"├ 실측 IL ${e.il_usd:+.4f} _(가격 {e.px_chg * 100:+.1f}%, 아직 손실 아님)_"]
-        mark = "✅" if cov >= 1.0 else "🔴"
+            return [f"├ 수수료 ${e.fee_usd:.4f} · 가격변동 손실 없음 "
+                    f"_(ETH {e.px_chg * 100:+.1f}%)_"]
         return [
-            f"├ 실측 수수료 ${e.fee_usd:.4f} / IL ${e.il_usd:+.4f} "
-            f"→ *커버리지 {cov:.2f}x* {mark}",
-            f"├ _가격 {e.px_chg * 100:+.1f}% 경로 — 되돌아오면 IL도 축소_",
+            f"├ 번 돈 ${e.fee_usd:.4f} · 잃은 돈 ${abs(e.il_usd):.4f}",
+            f"├ 수수료가 손실의 *{cov * 100:.0f}%* 를 메움 _(100%면 본전)_",
+            f"├ _ETH {e.px_chg * 100:+.1f}% — 되돌아오면 손실도 사라짐_",
         ]
 
     def _status_text(self, r: CycleReport, chg: tuple[float, float, bool] | None = None,
@@ -173,29 +184,34 @@ class TgInterface:
             f"`{_kst(r.ts)} KST`",
             "",
             f"💰 *총자산 ${r.equity:,.2f}*{self._chg_label(chg)}",
-            f"└ LP ${r.lp_value:,.2f} · HL ${r.hl_account:,.2f} · 지갑 ${r.wallet_usd:,.2f}",
+            f"└ LP ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f} · 지갑 ${r.wallet_usd:,.2f}",
             "",
-            f"📍 *포지션* · ETH ${r.price:,.2f}",
+            f"📍 *안전 상태* · ETH ${r.price:,.2f}",
         ]
         if r.lp_value <= 0:
             out.append("└ LP 없음 — 진입 대기 중")
         else:
+            # 레인지는 '남은 여유'로 뒤집어 보여준다 — 클수록 안전해야 직관적이다.
+            room = 1 - r.range_ratio
+            trigger_room = 1 - self.s.rerange_trigger
+            # 드리프트(%)보다 '헤지 안 된 ETH가 몇 달러어치인가'가 바로 읽힌다.
+            gap = abs(r.lp_delta - r.hedge_size)
             out += [
-                f"├ 레인지 {r.range_ratio:.0%} "
+                f"├ 가격범위 여유 {room:.0%} "
                 f"{_mark(r.range_ratio, 0.70, self.s.rerange_trigger)}"
-                f" _(재배치 {self.s.rerange_trigger:.0%})_",
-                f"├ 델타 LP {r.lp_delta:.4f} / 숏 {r.hedge_size:.4f} ETH "
-                f"_(드리프트 {r.drift_pct:.1f}%)_",
-                f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.0, 2.5)} _(경보 2.0x)_",
+                f" _({trigger_room:.0%} 남으면 재배치)_",
+                f"├ 헤지 빈틈 {gap:.4f} ETH ≈ ${gap * r.price:,.0f} "
+                f"_(LP {r.lp_delta:.4f} / 숏 {r.hedge_size:.4f})_",
+                f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.0, 2.5)} _(2.0x면 경보)_",
             ]
         out += [
             "",
-            "💵 *수익*",
+            "💵 *들어오는 돈*",
             # 소액 구간에선 센트 반올림으로 누적이 안 보여 4자리까지 표기
-            f"├ 미수령 수수료 ${r.owed_usd:,.2f}" if r.owed_usd >= 1
-            else f"├ 미수령 수수료 ${r.owed_usd:.4f}",
-            f"├ 펀딩 24h {r.funding_apr:+.1f}% APR {'✅' if r.funding_apr >= 0 else '⚠️'}",
-            f"└ 헤지 uPnL {'+' if r.hedge_upnl >= 0 else '-'}${abs(r.hedge_upnl):,.2f}",
+            f"├ 쌓인 수수료 ${r.owed_usd:,.2f} _(아직 안 받음)_" if r.owed_usd >= 1
+            else f"├ 쌓인 수수료 ${r.owed_usd:.4f} _(아직 안 받음)_",
+            f"├ 펀딩 {r.funding_apr:+.1f}%/년 {'받는 중 ✅' if r.funding_apr >= 0 else '내는 중 ⚠️'}",
+            f"└ 숏 평가손익 {'+' if r.hedge_upnl >= 0 else '-'}${abs(r.hedge_upnl):,.2f}",
         ]
         out += self._edge_lines(edge)
         return "\n".join(out)
