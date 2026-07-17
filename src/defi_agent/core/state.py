@@ -8,7 +8,10 @@ import aiosqlite
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     ts INTEGER NOT NULL,
-    kind TEXT NOT NULL,          -- mint / rerange / hedge / collect / error / info
+    -- mint / rerange / hedge / collect / error / info
+    -- 'stale:' 접두사는 사실이 아닌 것으로 판명된 기록 (예: 2a686e3 이전의 허위 재헤지).
+    -- 원본 보존을 위해 지우지 않고 표시에서만 뺀다 — scripts/mark_stale_hedge_events.py 참조.
+    kind TEXT NOT NULL,
     detail TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -94,5 +97,6 @@ class Store:
     async def recent_events(self, n: int = 10) -> list[tuple[int, str, str]]:
         async with aiosqlite.connect(self.path) as db:
             cur = await db.execute(
-                "SELECT ts, kind, detail FROM events ORDER BY ts DESC LIMIT ?", (n,))
+                "SELECT ts, kind, detail FROM events WHERE kind NOT LIKE 'stale:%' "
+                "ORDER BY ts DESC LIMIT ?", (n,))
             return await cur.fetchall()

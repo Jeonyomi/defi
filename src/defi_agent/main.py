@@ -11,10 +11,9 @@ import logging
 
 from .chain.base_client import BaseClient
 from .config import load_settings
-from .core.rebalancer import Rebalancer
+from .core.rebalancer import Rebalancer, _short_err
 from .core.state import Store
 from .hedge.hyperliquid_client import HyperliquidHedge
-from .lp import math as clmath
 from .lp.aerodrome import AerodromeLP
 from .tg.bot import TgInterface
 
@@ -51,8 +50,8 @@ async def rebalance_loop(rb: Rebalancer, tg: TgInterface, interval: int):
             import time as _t
             if _t.time() - last_err_notify > 4 * 3600:
                 last_err_notify = _t.time()
-                await tg.notify(f"🚨 *사이클 에러*\n`{e}`\n"
-                                f"_다음 사이클에 자동 재시도 · 동일 에러는 4h 쿨다운_")
+                await tg.notify(f"🚨 *사이클이 실패했습니다*\n{_short_err(e)}\n"
+                                f"_다음 사이클에 자동으로 다시 시도합니다._")
         await asyncio.sleep(interval)
 
 
@@ -100,16 +99,14 @@ async def amain():
     rb = Rebalancer(s, lp, hedge, store)
     tg = TgInterface(s, rb, store)
     status_every = (f"{s.status_notify_min}분마다" if s.status_notify_min else "꺼짐")
+    # 재기동 사실은 알릴 가치가 있지만 설정 전문은 아니다 — 풀 주소처럼 사람이
+    # 손댈 수 없는 값은 빼고, 바꿀 수 있고 실제로 영향을 주는 것만 남긴다.
     await tg.notify(
-        f"🚀 *defi-agent 기동* · {'DRY_RUN' if s.dry_run else '🔴 LIVE'}\n"
+        f"🚀 *LP 헤지 시작* · {'연습(DRY_RUN)' if s.dry_run else '🔴 실제 자금'}\n"
         f"`{datetime.datetime.now(KST).strftime('%m-%d %H:%M')} KST`\n\n"
-        f"⚙️ *설정*\n"
-        f"├ 풀 Aerodrome WETH/USDC `{pool[:10]}…`\n"
-        f"├ LP 한도 ${s.lp_max_usdc:,.0f} · 레인지 ±{s.lp_range_pct}% "
-        f"_(집중도 m={clmath.concentration_from_pct(s.lp_range_pct):.1f})_\n"
-        f"├ 헤지 {s.hl_coin} ≤{s.hl_max_leverage}x\n"
-        f"└ 사이클 {s.rebalance_interval_sec // 60}분 · 정기 상태 {status_every} · "
-        f"리포트 {s.daily_report_hour_kst}시")
+        f"최대 ${s.lp_max_usdc:,.0f}까지 · 가격범위 ±{s.lp_range_pct}%\n"
+        f"{s.rebalance_interval_sec // 60}분마다 점검 · 상태 알림 {status_every}\n"
+        f"_/lp 로 언제든 확인하세요._")
 
     tasks = [
         asyncio.create_task(rebalance_loop(rb, tg, s.rebalance_interval_sec)),

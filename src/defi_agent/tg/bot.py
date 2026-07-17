@@ -248,9 +248,9 @@ class TgInterface:
                 f"_총자산 ${r.equity:,.2f} · ETH ${r.price:,.2f}_")
 
     def _alert_text(self, a: str, r: CycleReport) -> str:
-        head = a if a.startswith(("⚠️", "🚨", "⏸")) else "⚠️ " + a
-        h = int(self.ALERT_COOLDOWN_SEC / 3600)
-        return f"{head}\n`{_kst(r.ts, '%H:%M')} KST · 동일 유형 {h}h 쿨다운`"
+        # 쿨다운 시간은 붙이지 않는다 — 알림 시스템의 내부 사정이지 사용자가 할 일이 아니다.
+        head = a if a.startswith(("⚠️", "🚨", "⏸", "⏳", "💤")) else "⚠️ " + a
+        return f"{head}\n`{_kst(r.ts, '%H:%M')} KST`"
 
     def _allowed(self, m: Message) -> bool:
         """TG_CHAT_ID 화이트리스트 — 다른 사용자의 명령은 조용히 무시."""
@@ -264,7 +264,9 @@ class TgInterface:
             await m.answer(
                 f"defi-agent 연결됨 (chat_id: `{m.chat.id}`)\n"
                 f"모드: {'DRY_RUN' if self.s.dry_run else '🔴 LIVE'}\n"
-                "명령: /status /pnl /pause /resume /events", parse_mode="Markdown")
+                "명령: /status /pnl /pause /resume /events\n"
+                "_(전용 봇 구성 전용. @mjquant_bot 공유 시엔 /lp* 를 쓰세요)_",
+                parse_mode="Markdown")
 
         @self.dp.message(Command("status"))
         async def status(m: Message):
