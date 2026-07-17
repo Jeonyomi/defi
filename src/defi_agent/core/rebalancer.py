@@ -51,8 +51,25 @@ class Rebalancer:
         self.paused = False
         self._last_rerange_ts = 0.0
 
+    async def _sync_paused(self):
+        """일시정지 플래그를 DB에서 읽는다 — 이 프로세스는 텔레그램 명령을 못 받는다.
+
+        토큰을 quant 봇과 공유해 폴링을 그쪽이 점유하므로(state.py kv 주석 참조),
+        /lp_pause는 quant가 DB에 쓰고 여기서 읽는 방식으로만 닿는다.
+        사이클 시작에 읽어도 지연이 없는 이유: 이 에이전트는 사이클 안에서만
+        행동하므로 사이클 사이의 플래그 변화는 어차피 관측할 대상이 없다.
+        """
+        try:
+            row = await self.store.get_kv("paused")
+        except Exception:  # noqa: BLE001 — 플래그를 못 읽어도 사이클은 돌아야 한다
+            log.exception("일시정지 플래그 조회 실패 — 직전 상태 유지")
+            return
+        if row is not None:
+            self.paused = row[1] == "1"
+
     async def run_cycle(self) -> CycleReport:
         r = CycleReport(ts=time.time())
+        await self._sync_paused()
         st = self.lp.pool_state()
         r.price = st.price
         pos = self.lp.find_position()

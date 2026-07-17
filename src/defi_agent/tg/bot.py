@@ -1,7 +1,13 @@
-"""텔레그램 인터페이스 (@mjquant_bot).
+"""텔레그램 인터페이스 (@mjquant_bot — quant 봇과 토큰 공유).
 
-명령: /status /pnl /pause /resume /events /start
-알림: 액션(진입/재배치/재헤지/수수료), 경보(펀딩 역전/에러),
+이 프로세스는 명령을 받지 못한다. 텔레그램 getUpdates는 단일 소비자만
+허용하고 그 자리를 quant 봇이 점유하기 때문이다 (run_polling 참조).
+따라서 사용자 명령은 quant의 /lp* 핸들러가 처리하고, 이 클래스는
+매 사이클 렌더링된 본문을 DB(kv.status_text)에 발행해 그쪽에 넘긴다.
+아래 명령 핸들러는 TG_POLLING=true인 전용 봇 구성에서만 살아난다.
+
+명령(전용 봇 한정): /status /pnl /pause /resume /events /start
+알림(항상 동작): 액션(진입/재배치/재헤지/수수료), 경보(펀딩 역전/에러),
       정기 상태(STATUS_NOTIFY_MIN 간격), 일일 리포트
 
 메시지 형식은 _status_text/_action_text/_alert_text 세 곳에서만 만든다 —
@@ -216,6 +222,27 @@ class TgInterface:
         out += self._edge_lines(edge)
         return "\n".join(out)
 
+    async def _pnl_text(self) -> str:
+        # equity=0인 진입 전 스냅샷은 제외 — 베이스라인이 0이면 수익률이 무의미
+        series = [(ts, e) for ts, e in
+                  await self.store.equity_series(int(time.time()) - 30 * 86400) if e > 0]
+        series, flow = _trim_to_last_flow(series)  # 입금을 수익으로 세지 않기 위해
+        if len(series) < 2:
+            return "스냅샷 부족 — 유효 스냅샷 2개 이상 필요"
+        e0, e1 = series[0][1], series[-1][1]
+        days = (series[-1][0] - series[0][0]) / 86400
+        if days < 0.02:  # ~30분 미만이면 연환산이 무의미한 배율로 튄다
+            return f"*PnL* 관측 구간 부족 ({days * 24:.1f}h)\n현재 총자산 ${e1:,.2f}"
+        ret = (e1 / e0 - 1) * 100
+        out = [f"📈 *LP 헤지 PnL* · 관측 {days:.1f}일",
+               f"${e0:,.2f} → *${e1:,.2f}*  ({ret:+.2f}%)",
+               f"연환산 {ret / days * 365:+.1f}% APR"]
+        if flow:
+            out.append("_마지막 입출금 이후 기준_")
+        if days < 1:
+            out.append("_표본 1일 미만 — 연환산은 참고용_")
+        return "\n".join(out)
+
     def _action_text(self, a: str, r: CycleReport) -> str:
         return (f"✅ *실행됨* · `{_kst(r.ts, '%H:%M')} KST`\n{a}\n"
                 f"_총자산 ${r.equity:,.2f} · ETH ${r.price:,.2f}_")
@@ -254,34 +281,14 @@ class TgInterface:
         async def pnl(m: Message):
             if not self._allowed(m):
                 return
-            # equity=0인 진입 전 스냅샷은 제외 — 베이스라인이 0이면 수익률이 무의미
-            series = [(ts, e) for ts, e in
-                      await self.store.equity_series(int(time.time()) - 30 * 86400) if e > 0]
-            series, flow = _trim_to_last_flow(series)  # 입금을 수익으로 세지 않기 위해
-            if len(series) < 2:
-                await m.answer("스냅샷 부족 — 유효 스냅샷 2개 이상 필요")
-                return
-            e0, e1 = series[0][1], series[-1][1]
-            days = (series[-1][0] - series[0][0]) / 86400
-            if days < 0.02:  # ~30분 미만이면 연환산이 무의미한 배율로 튄다
-                await m.answer(f"*PnL* 관측 구간 부족 ({days * 24:.1f}h)\n"
-                               f"현재 총자산 ${e1:,.2f}", parse_mode="Markdown")
-                return
-            ret = (e1 / e0 - 1) * 100
-            out = [f"📈 *PnL* · 관측 {days:.1f}일",
-                   f"${e0:,.2f} → *${e1:,.2f}*  ({ret:+.2f}%)",
-                   f"연환산 {ret / days * 365:+.1f}% APR"]
-            if flow:
-                out.append("_마지막 입출금 이후 기준_")
-            if days < 1:
-                out.append("_표본 1일 미만 — 연환산은 참고용_")
-            await m.answer("\n".join(out), parse_mode="Markdown")
+            await m.answer(await self._pnl_text(), parse_mode="Markdown")
 
         @self.dp.message(Command("pause"))
         async def pause(m: Message):
             if not self._allowed(m):
                 return
             self.rb.paused = True
+            await self.store.set_kv("paused", "1")  # DB가 단일 소스 — run_cycle이 여기서 읽는다
             await m.answer("⏸ 일시정지 — 신규 액션 중단, 관측은 계속")
 
         @self.dp.message(Command("resume"))
@@ -289,6 +296,7 @@ class TgInterface:
             if not self._allowed(m):
                 return
             self.rb.paused = False
+            await self.store.set_kv("paused", "0")
             await m.answer("▶️ 재개")
 
         @self.dp.message(Command("events"))
@@ -323,8 +331,25 @@ class TgInterface:
         import re
         return re.sub(r"[\d\.,\$%+\-:]+", "", text)
 
+    async def publish_status(self, r: CycleReport):
+        """렌더링된 상태를 DB에 남긴다 — quant 봇의 /lp가 이걸 읽어 전달한다.
+
+        본문을 그대로 저장하는 이유: quant가 원자료로 다시 그리면 표현이 두 벌이 되어
+        갈라진다. 렌더링은 이 클래스 한 곳에만 두고 quant는 전달만 한다.
+        저장 실패가 사이클을 깨선 안 되므로 예외는 삼킨다 (표시 기능일 뿐).
+        """
+        try:
+            await self.store.set_kv(
+                "status_text",
+                self._status_text(r, await self._change(24), title="LP 헤지 상태",
+                                  edge=await self._edge()))
+            await self.store.set_kv("pnl_text", await self._pnl_text())
+        except Exception:  # noqa: BLE001
+            log.exception("상태 발행 실패 — /lp가 직전 값을 보게 된다")
+
     async def notify_cycle(self, r: CycleReport):
         self.last_report = r
+        await self.publish_status(r)
         for a in r.actions:
             await self.notify(self._action_text(a, r))
         now = time.time()

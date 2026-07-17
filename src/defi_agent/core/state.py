@@ -19,6 +19,15 @@ CREATE TABLE IF NOT EXISTS snapshots (
     equity REAL,                 -- 총자산 (USD)
     mark_px REAL                 -- HL mark price (외부 참조가, 변동성 계산용)
 );
+-- 프로세스 간 창구. @mjquant_bot 토큰을 quant 봇과 공유하는 탓에
+-- 텔레그램 폴링은 quant 프로세스만 점유할 수 있다 (getUpdates는 단일 소비자).
+-- 그래서 defi는 여기에 렌더링된 상태를 남기고, quant의 /lp가 읽어 전달한다.
+-- 반대로 /lp_pause는 여기에 플래그를 쓰고, defi가 사이클 시작에 읽는다.
+CREATE TABLE IF NOT EXISTS kv (
+    key TEXT PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    val TEXT NOT NULL
+);
 """
 
 # 기존 DB에 없는 컬럼을 덧붙인다 (ALTER는 중복 시 에러이므로 존재 확인 후 실행).
@@ -69,6 +78,18 @@ class Store:
                 "SELECT ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc, mark_px "
                 "FROM snapshots WHERE ts >= ? ORDER BY ts", (since_ts,))
             return await cur.fetchall()
+
+    async def set_kv(self, key: str, val: str):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("INSERT OR REPLACE INTO kv (key, ts, val) VALUES (?,?,?)",
+                             (key, int(time.time()), val))
+            await db.commit()
+
+    async def get_kv(self, key: str) -> tuple[int, str] | None:
+        """(기록 시각, 값). 없으면 None."""
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT ts, val FROM kv WHERE key = ?", (key,))
+            return await cur.fetchone()
 
     async def recent_events(self, n: int = 10) -> list[tuple[int, str, str]]:
         async with aiosqlite.connect(self.path) as db:
