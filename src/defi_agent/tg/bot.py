@@ -174,7 +174,8 @@ class TgInterface:
         경로의존적이라 APR로 안 바꾸고 누적 $와 비율로만 보여준다.
         """
         cov = e.coverage
-        if cov is None:
+        # IL이 몇 센트 미만이면 분모가 0에 가까워 비율이 수천 %로 튄다(무의미).
+        if cov is None or abs(e.il_usd) < 0.05:
             return [f"├ 수수료 ${e.fee_usd:.4f} · 가격변동 손실 없음 "
                     f"_(ETH {e.px_chg * 100:+.1f}%)_"]
         return [
