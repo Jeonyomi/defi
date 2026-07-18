@@ -173,10 +173,14 @@ class Rebalancer:
             cooldown_ok = time.time() - self._last_rerange_ts > self.s.rerange_cooldown_h * 3600
             if cooldown_ok:
                 usd = r.lp_value
-                await self._act(r, "rerange",
-                                f"레인지 재배치 (ratio {pos.range_ratio:.2f}, ${usd:,.0f})",
-                                lambda: self._do_rerange(pos, usd))
-                self._last_rerange_ts = time.time()
+                ok = await self._act(r, "rerange",
+                                     f"레인지 재배치 (ratio {pos.range_ratio:.2f}, ${usd:,.0f})",
+                                     lambda: self._do_rerange(pos, usd))
+                # 실패 시 쿨다운을 걸지 않는다 — 걸어버리면 오류 안내("다음 사이클에
+                # 자동 재시도")와 달리 레인지 밖에서 12시간 방치된다. close만 성공하고
+                # mint가 실패한 경우는 다음 사이클의 신규 진입 분기(쿨다운 무관)가 잡는다.
+                if ok:
+                    self._last_rerange_ts = time.time()
                 return r
             wait_h = self.s.rerange_cooldown_h - (time.time() - self._last_rerange_ts) / 3600
             r.alerts.append(f"⏳ 가격범위를 옮겨야 하는데 대기 중입니다 "
@@ -263,6 +267,6 @@ class Rebalancer:
     def _do_rerange(self, pos, usd_total: float):
         self.lp.close_position(pos)
         self.lp.mint_centered(min(usd_total, self.s.lp_max_usdc))
-        new_pos = self.lp.find_position()
+        new_pos = self._find_position_retry()  # mint 직후 RPC 지연으로 안 보일 수 있음
         if new_pos:
             self.hedge.set_target_short(new_pos.weth_amount + new_pos.owed_weth)
