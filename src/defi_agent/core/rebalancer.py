@@ -196,6 +196,19 @@ class Rebalancer:
                     await self._act(r, "hedge",
                                     f"재헤지: 숏 {hs.short_size:.4f} → {r.lp_delta:.4f} ETH (드리프트 {drift:.1f}%)",
                                     lambda: self.hedge.set_target_short(r.lp_delta))
+        elif hs.short_size > 0:
+            # LP가 레인지를 완전히 벗어나 ETH를 전량 USDC로 바꾼 상태(lp_delta==0)인데
+            # 숏이 남아 있으면 '벌거벗은 숏' — 상승장에서 순수 방향 손실이 된다.
+            # 재배치 쿨다운으로 재중심을 못 잡는 구간에서도 델타를 0으로 유지하도록 숏을 걷어낸다.
+            # 가격이 레인지로 되돌아오면 LP가 ETH를 되사고 다음 사이클(10분)에 재헤지된다.
+            # (하단 완전 이탈은 lp_delta가 최대치라 위 정상 경로가 처리하므로, 이 분기는 상단 이탈만 탄다.)
+            naked_notional = hs.short_size * hs.mark_px
+            if naked_notional >= 15:  # HL 최소주문 미만이면 노출도 $15 미만이라 다음 사이클로 보류
+                await self._act(r, "hedge",
+                                f"헤지 축소: 숏 {hs.short_size:.4f} → 0 ETH (LP 레인지 완전 이탈)",
+                                lambda: self.hedge.close_all())
+            else:
+                log.info("레인지 완전 이탈 + 잔여 숏 $%.0f < HL 최소주문 — 보류", naked_notional)
 
         # 4) 수수료 수령
         owed_usd = r.owed_usd
