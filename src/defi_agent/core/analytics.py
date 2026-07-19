@@ -156,9 +156,12 @@ def compute_edge(rows: list[tuple], m: float,
     #  2) LP 원금 급변 -> mint/재배치로 구성이 바뀌어 HODL 기준선이 무효
     # 둘 중 나중 것 이후만 쓴다. 가격 이동만으로도 구성은 서서히 변하므로
     # 임계는 넉넉히 잡되(50%), 재배치는 통째로 갈아끼우므로 확실히 걸린다.
+    # owed 비교는 반드시 토큰 수량으로 한다 — USD 환산액은 가격이 조금만
+    # 내려도 감소해(accrual보다 평가절하가 큼) 수거가 없어도 창이 잘린다.
     start = 0
     for i in range(1, len(pts)):
-        if fee_usd(pts[i]) < fee_usd(pts[i - 1]) - 1e-12:
+        if (pts[i][2] < pts[i - 1][2] - 1e-15
+                or pts[i][3] < pts[i - 1][3] - 1e-9):
             start = i
         prev, cur = pts[i - 1][4], pts[i][4]
         if prev > 0 and abs(cur - prev) / prev > 0.5:
