@@ -26,6 +26,7 @@ class Settings:
     dry_run: bool
     base_rpc: str
     wallet_private_key: str
+    lp_pair: str
     lp_tick_spacing: int
     lp_range_pct: float
     lp_max_usdc: float
@@ -58,11 +59,17 @@ def load_settings() -> Settings:
         return default
 
     from .keys import get_key  # 순환 임포트 방지용 지연 임포트
+    from . import constants as C
+
+    lp_pair = env("LP_PAIR", "weth_usdc")
+    if lp_pair not in C.LP_PAIRS:
+        raise RuntimeError(f"LP_PAIR 미지원: {lp_pair} (지원: {', '.join(C.LP_PAIRS)})")
 
     return Settings(
         dry_run=env("DRY_RUN", "true").lower() != "false",
         base_rpc=env("BASE_RPC", "https://mainnet.base.org"),
         wallet_private_key=get_key("wallet"),
+        lp_pair=lp_pair,
         lp_tick_spacing=int(env("LP_TICK_SPACING", "100")),
         lp_range_pct=float(env("LP_RANGE_PCT", "35")),
         lp_max_usdc=float(env("LP_MAX_USDC", "5000")),

@@ -1,0 +1,93 @@
+# 전환 계획: WETH/USDC ±35% → cbETH/WETH ±2% LP + 풀 델타 숏 (권고안 ④)
+
+승인: 2026-07-20 MJ ("권고안 4번으로 진행"). 근거: 리서치 루프 iter21 백테스트
+(①현행 -17.1% / ②펀딩캐리 +7.4% / ③cbETH+숏 +9.6% / ④cbETH/WETH LP+숏 +10.3%,
+디페그 -7% 스트레스에서도 ④ 연 +5.6% 양수).
+
+이 문서는 세션이 끊겨도 이어갈 수 있도록 모든 확정 사실·결정·순서를 담는다.
+**진행 상태는 맨 아래 체크리스트가 유일한 진실.**
+
+## 확정된 온체인 사실 (2026-07-20 실측)
+
+- 대상 풀: Aerodrome Slipstream cbETH/WETH, **tickSpacing=1**
+  - pool = `0x47cA96Ea59C13F72745928887f84C9F52C3D7348`
+  - token0 = cbETH `0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22` (18dp)
+  - token1 = WETH `0x4200000000000000000000000000000000000006` (18dp)
+  - fee=70 (0.007%), tick=1269, 비율 1 cbETH = 1.1353 WETH, 유동성 충분 (liq≈1.83e25)
+- factory/NPM/SwapRouter는 기존 constants.py 주소 그대로 사용 가능 (같은 Slipstream).
+- 현재 포지션 (스냅샷 1784520930): LP 0.04564 WETH + 108.31 USDC ≈ $193.7,
+  미수령 수수료 ≈ $0.21, HL 숏 0.0504 ETH @ 증거금 $61.39, 지갑 WETH 0.00209, 총 $259.2.
+
+## 자본배분 결정 (레버리지 산식이 바뀐다)
+
+새 구조는 LP 전액이 ETH 델타 → 숏 노셔널 = LP 가치 (구조상 기존의 ~2배).
+봇 예산 규칙(HL 증거금 ≥ 노셔널 60%, 즉 lev ≤ 1.67x)을 유지하기 위해:
+
+- **1차 전개: LP = $100** → 숏 ≈ 0.0535 ETH, 레버리지 ≈ 1.63x ✅
+- 나머지 ≈ $93은 Base 지갑 USDC로 대기 (cbeth_weth 모드 봇은 USDC를 안 건드림 → 자동진입 안전)
+- `LP_MAX_USDC=110`으로 봇의 자동 재진입 상한도 고정
+- 확장 옵션(사용자 액션): HL에 USDC ~$40 입금 시 LP를 ~$155까지 증액 가능 (lev 1.55x 유지)
+
+## .env 전환값 (전환 시점에 변경)
+
+```
+LP_PAIR=cbeth_weth      # 신규 키
+LP_TICK_SPACING=1       # 기존 100
+LP_RANGE_PCT=2          # 기존 35
+LP_MAX_USDC=110         # 기존 500
+```
+HL_COIN=ETH 유지 (cbETH 노출을 ETH 숏으로 헤지 — 베이시스=cbETH/ETH 비율이며 그게 곧 LP 레인지).
+
+## 코드 일반화 범위 (LP_PAIR 설정 기반)
+
+WETH/USDC 하드코딩을 페어 설정으로 치환. cbeth_weth 모드의 의미 변화:
+
+| 항목 | weth_usdc (기존) | cbeth_weth (신규) |
+|---|---|---|
+| pool price | USDC per WETH = USD가 | WETH per cbETH = 비율 (~1.135) |
+| USD 환산 | st.price | **hs.mark_px (HL ETH 마크)** |
+| lp_delta (ETH) | weth_amount+owed | **cbeth×ratio + weth (+owed 양쪽)** |
+| 헤지 타깃 | token0 수량 | **풀 델타 전체** |
+| mint 예산 | usd_total→USDC(6dp) raw | usd_total/eth_usd→WETH(18dp) raw |
+| 초기 헤지 추정치 | deployable×0.42/price | **deployable/eth_usd (×1.0)** |
+| analytics 변동성 | ETH/USD 가격 시계열 | 비율 시계열 (자연히 올바름) |
+
+터치포인트: constants.py(CBETH 추가), config.py(LP_PAIR), lp/aerodrome.py(token0/1
+파라미터화, prepare_ratio/mint_centered/swap), core/rebalancer.py(델타·환산·진입로직),
+core/analytics.py(USD 환산 경로), tg 메시지(표기), core/state.py(스냅샷 컬럼은
+lp_weth/lp_usdc 이름 유지하되 cbeth 모드에선 t0/t1 의미 — 주석으로 명시, 스키마 변경 금지).
+snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
+
+주의: 모드 전환 시 analytics의 관측 창은 price 의미가 바뀌므로 **전환 시점 이전
+스냅샷과 섞어 계산하면 안 됨** — 전환 tx 이후 ts만 쓰도록 창 시작점을 강제할 것.
+
+## 전환 실행 순서 (각 단계 델타 갭 ≤ $20 유지)
+
+0. 사이클 틈 확인 후 봇 정지 (Get-CimInstance로 프로세스 확인 — wmic 금지,
+   래퍼까지 두 프로세스 모두 정지).
+1. (코드 완료 + DRY_RUN 검증 통과가 선행 조건)
+2. 구 LP 청산: close_position (weth_usdc 모드 스크립트) → 지갑 ≈ 0.0477 WETH + $195 USDC.
+   숏 0.0504 유지 (지갑 WETH가 델타 커버) ✅
+3. HL 숏 타깃 0.0535로 조정 (+0.0031, ~$6 — $15 미만이면 스킵하고 5단계 후 봇에 맡김).
+4. 스왑 (구 풀 spacing=100): USDC→WETH로 지갑 WETH를 0.0535 ETH-eq까지 증액.
+   그 다음 신 풀(spacing=1)에서 WETH→cbETH ≈ 절반 (mint 비율은 봇 prepare_ratio가 정밀 조정).
+5. .env 전환값 적용 → 봇 재기동 → 자동진입 분기가 cbETH/WETH mint + 풀 델타 헤지 수행.
+6. 검증: 첫 사이클 로그 — LP ≈ $100, 숏 ≈ 0.0535, lev ≤ 1.7x, 잔여 USDC ≈ $93 비침범.
+   30분 뒤 두 번째 사이클에서 드리프트/알림 정상 확인.
+
+롤백: 4단계 이전 실패 시 — 구 모드 그대로 재기동하면 자동진입이 WETH/USDC 재구성.
+5단계 이후 실패 시 — cbETH/WETH는 동종자산이라 held 상태로도 델타는 숏이 커버, 급할 것 없음.
+
+## 진행 체크리스트 (완료 시 [x] + 타임스탬프 기입)
+
+- [x] 풀 온체인 검증 (2026-07-20, 이 문서 상단)
+- [ ] 코드 일반화 + 커밋 (라이브 무영향: LP_PAIR 기본값 weth_usdc)
+  - [x] 1. constants(CBETH·LP_PAIRS) + config(LP_PAIR 검증) — 2026-07-20 13:35, 단위검증 통과
+  - [ ] 2. lp/aerodrome.py 파라미터화 (token0/1·decimals·price·prepare_ratio·mint 예산 WETH 단위)
+  - [ ] 3. core/rebalancer.py (lp_delta=풀델타, USD환산=mark_px, 초기헤지 추정 1.0, 진입 need_margin 산식 full_delta면 0.5→1.0)
+  - [ ] 4. core/analytics.py (USD 환산 경로 + 모드 전환 시점 이후 스냅샷만 사용하도록 창 시작 강제)
+  - [ ] 5. tg 표기 (WETH/USDC 고정 문구 → 페어 인지)
+  - [ ] 6. 통합: main.py 기동 경로 + weth_usdc 모드 무변경 회귀 확인(현재 라이브 설정으로 read-only 사이클)
+- [ ] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건)
+- [ ] 라이브 전환 실행 (위 0~6)
+- [ ] 전환 후 24h 관측: 수수료 적재·비율 변동성·재헤지 빈도 확인, MJ에게 결과 보고

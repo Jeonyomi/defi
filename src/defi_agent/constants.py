@@ -10,8 +10,25 @@ main.py 기동 시 startup_verify()가 factory→pool 해석과 코드 존재 �
 # ── 토큰 (Base 표준 배포, 검증됨) ─────────────────────────────
 WETH = "0x4200000000000000000000000000000000000006"
 USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+CBETH = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"  # Coinbase Wrapped Staked ETH
 WETH_DECIMALS = 18
 USDC_DECIMALS = 6
+CBETH_DECIMALS = 18
+
+# ── LP 페어 프리셋 ───────────────────────────────────────────
+# token0/token1은 주소 오름차순 (Slipstream 정렬 규칙) — startup_verify가 재확인한다.
+# price_is_usd: pool price(token1/token0)가 곧 USD가인가.
+#   False(cbeth_weth)면 price는 WETH per cbETH 비율이라 USD 환산에 HL ETH 마크가가 필요.
+# full_delta: 두 토큰 모두 ETH 노출이라 헤지 타깃이 풀 델타(t0×ratio + t1)인가.
+#   False(weth_usdc)면 헤지 타깃은 token0(WETH) 수량만.
+LP_PAIRS = {
+    "weth_usdc": {"token0": WETH, "token1": USDC,
+                  "dec0": WETH_DECIMALS, "dec1": USDC_DECIMALS,
+                  "price_is_usd": True, "full_delta": False},
+    "cbeth_weth": {"token0": CBETH, "token1": WETH,
+                   "dec0": CBETH_DECIMALS, "dec1": WETH_DECIMALS,
+                   "price_is_usd": False, "full_delta": True},
+}
 
 # ── Aerodrome Slipstream (배포 전 재검증 필요) ────────────────
 CL_FACTORY = "0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A"
