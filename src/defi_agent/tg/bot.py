@@ -126,9 +126,13 @@ class TgInterface:
     async def _edge(self) -> LpEdge | None:
         """LP 레그 경제성 (수수료 vs 감마손실). 실패해도 상태 표시를 막지 않는다."""
         try:
-            rows = await self.store.edge_series(int(time.time()) - 7 * 24 * 3600)
+            # 페어 전환 이전 스냅샷은 price 의미가 달라 섞으면 안 됨 (LP_PAIR_SINCE)
+            since = max(int(time.time()) - 7 * 24 * 3600, self.s.lp_pair_since)
+            rows = await self.store.edge_series(since)
+            # cbeth 모드: sigma는 비율에서 재므로 HL ETH vol은 안 쓴다 (호출 절약)
+            vol_ref = self._vol_ref() if self.rb.price_is_usd else None
             return compute_edge(rows, concentration_from_pct(self.s.lp_range_pct),
-                                self._vol_ref())
+                                vol_ref, price_is_usd=self.rb.price_is_usd)
         except Exception:
             return None
 

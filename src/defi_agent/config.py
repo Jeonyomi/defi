@@ -27,6 +27,7 @@ class Settings:
     base_rpc: str
     wallet_private_key: str
     lp_pair: str
+    lp_pair_since: int
     lp_tick_spacing: int
     lp_range_pct: float
     lp_max_usdc: float
@@ -70,6 +71,9 @@ def load_settings() -> Settings:
         base_rpc=env("BASE_RPC", "https://mainnet.base.org"),
         wallet_private_key=get_key("wallet"),
         lp_pair=lp_pair,
+        # 페어 전환 tx 시각(unix ts). analytics가 이전 스냅샷(price 의미가 다름)과
+        # 섞어 계산하지 않도록 관측 창 시작을 강제한다. 전환 실행 5단계에서 설정.
+        lp_pair_since=int(env("LP_PAIR_SINCE", "0")),
         lp_tick_spacing=int(env("LP_TICK_SPACING", "100")),
         lp_range_pct=float(env("LP_RANGE_PCT", "35")),
         lp_max_usdc=float(env("LP_MAX_USDC", "5000")),

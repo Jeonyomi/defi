@@ -66,7 +66,8 @@ class LpEdge:
     pool_yield: float       # 풀레인지 환산 수수료수익률 = fee_apr / m
     breakeven_vol: float    # sqrt(8 * pool_yield) — m과 무관
     vol_err: float          # 변동성 상대표준오차
-    vol_src: str            # "hl-30d" (권장) | "pool" (폴백, slot0는 sigma 과소추정)
+    vol_src: str            # "hl-30d" (usd모드 권장) | "pool" (usd모드 폴백, 과소추정)
+                            # | "ratio" (cbeth 모드 정규 — 비율 시계열이 곧 정답)
 
     # --- 실측 레그 (모델 아님) ---
     # 창 시작 구성을 HODL했을 때 대비 LP 원금의 차이 = 실현 IL.
@@ -135,20 +136,35 @@ def breakeven_vol(pool_yield: float) -> float:
 
 
 def compute_edge(rows: list[tuple], m: float,
-                 vol_ref: tuple[float, int] | None = None) -> LpEdge | None:
+                 vol_ref: tuple[float, int] | None = None,
+                 price_is_usd: bool = True) -> LpEdge | None:
     """스냅샷 행 -> LpEdge.
 
-    rows: (ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc, mark_px) 오름차순.
-    mark_px는 구버전 스냅샷에 없으므로(NULL/0) 부족하면 price로 폴백한다.
+    rows: (ts, price, owed0, owed1, amount0, amount1, mark_px) 오름차순.
+    (컬럼명은 owed_weth/lp_weth 등이지만 의미는 페어의 token0/1 원시량.)
     수수료가 실측된(owed>0) 구간만 유효하다. 재배치/collect가 끼면 owed가
     0으로 리셋되므로, 마지막 단조증가 구간만 잘라 쓴다.
+
+    price_is_usd=True (weth_usdc): price가 곧 USD가. sigma는 vol_ref(HL 캔들)가
+      정답이고 풀 slot0는 폴백(모듈 docstring 참조).
+    price_is_usd=False (cbeth_weth): price는 비율(WETH per cbETH). 모든 가치는
+      token1(WETH=ETH) 단위로 셈한 뒤 mark_px(HL ETH 마크)로 USD 환산한다.
+      감마손실을 결정하는 sigma는 ETH/USD가 아니라 **비율의 변동성**이므로
+      vol_ref를 무시하고 비율 시계열에서 잰다 (vol_src="ratio").
+      mark_px가 창 안에 하나도 없으면 USD 환산 불가 → None.
+
+    창 시작 강제: 모드 전환 전후 스냅샷이 섞이면 price 의미가 달라(USD가 vs
+    비율) 계산이 전부 오염된다. 1차 방어는 호출부가 LP_PAIR_SINCE 이후만
+    넘기는 것이고, 여기서도 인접 price가 50% 넘게 튀면(정상 시장에선 10분에
+    불가능) 그 지점 이후로 창을 자른다.
     """
     # LP가 없는 행(부트스트랩/청산 구간)은 IL 기준선이 될 수 없다.
     pts = [r for r in rows if r[1] and r[1] > 0 and r[4] and r[4] > 0]
     if len(pts) < 3:
         return None
 
-    def fee_usd(r) -> float:
+    def fee_q(r) -> float:
+        # 미수령 수수료를 quote(token1) 단위로: usd모드=$, cbeth모드=WETH
         return r[2] * r[1] + r[3]
 
     # 구간 절단 조건 두 가지:
@@ -166,6 +182,9 @@ def compute_edge(rows: list[tuple], m: float,
         prev, cur = pts[i - 1][4], pts[i][4]
         if prev > 0 and abs(cur - prev) / prev > 0.5:
             start = i
+        # 3) price 급변(>50%) -> 모드 전환 등 price 의미 자체가 바뀐 지점
+        if abs(pts[i][1] - pts[i - 1][1]) / pts[i - 1][1] > 0.5:
+            start = i
     seg = pts[start:]
     if len(seg) < 3:
         return None
@@ -174,25 +193,36 @@ def compute_edge(rows: list[tuple], m: float,
     if h <= 0:
         return None
 
-    lp_usd = seg[-1][4] * seg[-1][1] + seg[-1][5]
+    # quote(token1) 단위 -> USD 환산 계수. usd모드는 1, cbeth모드는 HL ETH 마크.
+    # 마크는 창 안 마지막 유효값 하나만 쓴다 — 수수료·IL은 어차피 ETH 계열
+    # 수량이고, 행마다 다른 마크를 섞으면 ETH/USD 변동이 IL로 둔갑한다.
+    if price_is_usd:
+        to_usd = 1.0
+    else:
+        marks = [r[6] for r in seg if len(r) > 6 and r[6] and r[6] > 0]
+        if not marks:
+            return None
+        to_usd = marks[-1]
+
+    lp_usd = (seg[-1][4] * seg[-1][1] + seg[-1][5]) * to_usd
     if lp_usd <= 0:
         return None
 
-    d_fee = fee_usd(seg[-1]) - fee_usd(seg[0])
+    d_fee = (fee_q(seg[-1]) - fee_q(seg[0])) * to_usd
     fee = d_fee / lp_usd * (8760.0 / h)
 
-    # 실측 IL: 창 시작 구성(W0, U0)을 그대로 들고 있었을 때 대비 LP 원금.
+    # 실측 IL: 창 시작 구성(t0, t1 수량)을 그대로 들고 있었을 때 대비 LP 원금.
     p0, p1 = seg[0][1], seg[-1][1]
     hodl = seg[0][4] * p1 + seg[0][5]
-    il = (seg[-1][4] * p1 + seg[-1][5]) - hodl
+    il = ((seg[-1][4] * p1 + seg[-1][5]) - hodl) * to_usd
 
-    # sigma는 HL 캔들(vol_ref)이 정답. 못 받으면 풀 slot0로 폴백하되
-    # 표시에 드러내 판정을 신뢰하지 않게 한다.
-    if vol_ref and vol_ref[0] > 0 and vol_ref[1] >= 30:
+    # sigma 소스: usd모드는 HL 캔들(vol_ref)이 정답이고 풀 slot0는 폴백.
+    # cbeth모드는 비율 시계열이 정규 소스 — ETH/USD vol(vol_ref)은 오답이라 무시.
+    if price_is_usd and vol_ref and vol_ref[0] > 0 and vol_ref[1] >= 30:
         vol, n, vol_src = vol_ref[0], vol_ref[1], "hl-30d"
     else:
         vol, n = realized_vol([(r[0], r[1]) for r in seg])
-        vol_src = "pool"
+        vol_src = "pool" if price_is_usd else "ratio"
 
     g = gamma_apr(vol, m)
     py = fee / m if m > 0 else 0.0

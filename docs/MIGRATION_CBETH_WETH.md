@@ -32,6 +32,7 @@
 
 ```
 LP_PAIR=cbeth_weth      # 신규 키
+LP_PAIR_SINCE=<전환 tx unix ts>  # 신규 키 — analytics 관측 창 시작 강제 (이전 스냅샷 혼입 차단)
 LP_TICK_SPACING=1       # 기존 100
 LP_RANGE_PCT=2          # 기존 35
 LP_MAX_USDC=110         # 기존 500
@@ -90,7 +91,13 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
     (lp_delta=_pos_delta 풀델타, USD환산 to_usd=mark_px, 초기헤지 est_frac 1.0, need_margin
     delta_frac 0.5→1.0, mint/rerange 예산 token1 단위 + usd_value, mark_px=0 관측전용 가드,
     스냅샷은 amount0/1 원시량 저장 — weth_usdc 구 산식 수치 일치 회귀 포함)
-  - [ ] 4. core/analytics.py (USD 환산 경로 + 모드 전환 시점 이후 스냅샷만 사용하도록 창 시작 강제)
+  - [x] 4. core/analytics.py — 2026-07-20, tests/verify_analytics_pair.py 19건 통과
+    (compute_edge에 price_is_usd 파라미터: cbeth 모드는 token1(WETH) 단위로 셈한 뒤
+    창 내 마지막 유효 mark_px로만 USD 환산(행별 마크 혼용 금지 — ETH/USD 변동이 IL로
+    둔갑 방지), mark 전무 시 None. sigma는 vol_ref(HL ETH vol) 무시하고 비율 시계열
+    실측(vol_src="ratio"). 창 시작 강제 2중: config LP_PAIR_SINCE(신규, 기본 0) +
+    tg/_edge since=max(now-7d, since) 1차, compute_edge 내 인접 price 50% 급변 절단
+    2차. weth_usdc는 구 산식 수치 일치 회귀 확인, tg 표기는 5번에서)
   - [ ] 5. tg 표기 (WETH/USDC 고정 문구 → 페어 인지)
   - [ ] 6. 통합: main.py 기동 경로 + weth_usdc 모드 무변경 회귀 확인(현재 라이브 설정으로 read-only 사이클)
 - [ ] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건)
