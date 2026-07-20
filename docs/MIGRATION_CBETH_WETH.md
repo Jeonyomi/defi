@@ -86,7 +86,10 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
   - [x] 2. lp/aerodrome.py 파라미터화 — 2026-07-20 13:58, tests/verify_lp_pair_params.py 17건 통과
     (Position 필드 amount0/1·owed0/1로 일반화 + weth_amount 등 호환 별칭 유지 → rebalancer 무수정,
     mint_centered는 budget_t1(token1 단위) + usd_value(상한 체크용) 시그니처 — cbeth 모드 호출부는 3번에서)
-  - [ ] 3. core/rebalancer.py (lp_delta=풀델타, USD환산=mark_px, 초기헤지 추정 1.0, 진입 need_margin 산식 full_delta면 0.5→1.0)
+  - [x] 3. core/rebalancer.py — 2026-07-20, tests/verify_rebalancer_pair.py 26건 통과
+    (lp_delta=_pos_delta 풀델타, USD환산 to_usd=mark_px, 초기헤지 est_frac 1.0, need_margin
+    delta_frac 0.5→1.0, mint/rerange 예산 token1 단위 + usd_value, mark_px=0 관측전용 가드,
+    스냅샷은 amount0/1 원시량 저장 — weth_usdc 구 산식 수치 일치 회귀 포함)
   - [ ] 4. core/analytics.py (USD 환산 경로 + 모드 전환 시점 이후 스냅샷만 사용하도록 창 시작 강제)
   - [ ] 5. tg 표기 (WETH/USDC 고정 문구 → 페어 인지)
   - [ ] 6. 통합: main.py 기동 경로 + weth_usdc 모드 무변경 회귀 확인(현재 라이브 설정으로 read-only 사이클)

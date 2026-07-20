@@ -1,7 +1,12 @@
 """전략 코어: 사이클마다 상태 평가 → 필요한 액션 실행.
 
+페어 인지: LP_PAIRS 프리셋의 price_is_usd/full_delta로 해석이 갈린다.
+- weth_usdc: 풀 가격=USD가, 델타=token0(WETH)만
+- cbeth_weth: 풀 가격=비율(WETH per cbETH), 델타=풀 전체(양쪽 다 ETH 계열),
+  USD 환산은 HL ETH 마크(mark_px)로만 가능
+
 사이클 로직 (우선순위 순):
-1. 포지션 없음 + 자동진입 허용 → 50/50 정렬 후 mint + 헤지 설정
+1. 포지션 없음 + 자동진입 허용 → 비율 정렬 후 mint + 헤지 설정
 2. 레인지 이탈 임박/이탈 (range_ratio >= RERANGE_TRIGGER) → 쿨다운 확인 후 재배치
 3. 델타 드리프트 (|헤지-LP델타|/LP델타 > HEDGE_DRIFT_PCT) → 재헤지
 4. 미수령 수수료가 $50 초과 → collect
@@ -82,6 +87,16 @@ class Rebalancer:
         self.store = store
         self.paused = False
         self._last_rerange_ts = 0.0
+        # 페어 해석 플래그 (constants.LP_PAIRS 프리셋 — aerodrome이 이미 로드해 둠)
+        self.price_is_usd: bool = lp.pair["price_is_usd"]
+        self.full_delta: bool = lp.pair["full_delta"]
+
+    def _pos_delta(self, pos, price: float) -> float:
+        """포지션의 ETH 델타. full_delta 페어는 양쪽 토큰 전체(token0은 비율 환산), 아니면 token0만."""
+        d = pos.amount0 + pos.owed0
+        if self.full_delta:
+            d = d * price + pos.amount1 + pos.owed1
+        return d
 
     async def _sync_paused(self):
         """일시정지 플래그를 DB에서 읽는다 — 이 프로세스는 텔레그램 명령을 못 받는다.
@@ -108,14 +123,22 @@ class Rebalancer:
         hs = self.hedge.state()
         r.hedge_size = hs.short_size
         r.funding_apr = hs.funding_apr_recent
-        wallet_weth, wallet_usdc = self.lp.wallet_balances()
+        bal0, bal1 = self.lp.wallet_balances()
+
+        # USD 환산가: USD 쿼트 페어는 풀 가격 그대로, 아니면 HL ETH 마크
+        # (cbeth_weth의 풀 가격은 비율 ~1.135일 뿐 USD가 아니다)
+        eth_usd = st.price if self.price_is_usd else hs.mark_px
+        # token1 단위 가치 → USD 환산 계수 (weth_usdc: token1=USDC≈USD → 1)
+        to_usd = 1.0 if self.price_is_usd else eth_usd
 
         if pos:
-            r.lp_delta = pos.weth_amount + pos.owed_weth
-            r.lp_value = (pos.weth_amount + pos.owed_weth) * st.price + pos.usdc_amount + pos.owed_usdc
+            r.lp_delta = self._pos_delta(pos, st.price)
+            val_t1 = (pos.amount0 + pos.owed0) * st.price + pos.amount1 + pos.owed1
+            owed_t1 = pos.owed0 * st.price + pos.owed1
+            r.lp_value = val_t1 * to_usd
+            r.owed_usd = owed_t1 * to_usd
             r.range_ratio = pos.range_ratio
-            r.owed_usd = pos.owed_weth * st.price + pos.owed_usdc
-        r.wallet_usd = wallet_weth * st.price + wallet_usdc
+        r.wallet_usd = (bal0 * st.price + bal1) * to_usd
         r.hl_account = hs.account_value
         r.hedge_upnl = hs.unrealized_pnl
         r.equity = r.lp_value + r.wallet_usd + hs.account_value
@@ -124,12 +147,14 @@ class Rebalancer:
         if hs.account_value > 0:
             r.eff_lev = hs.short_size * hs.mark_px / hs.account_value
 
+        # 스냅샷 컬럼명 lp_weth/lp_usdc 등은 스키마 유지 — 실제 의미는 token0/token1
+        # (cbeth_weth 모드: lp_weth=cbETH, lp_usdc=WETH). USD 환산은 mark_px로.
         await self.store.snapshot(
             price=st.price,
-            lp_weth=pos.weth_amount if pos else 0, lp_usdc=pos.usdc_amount if pos else 0,
-            owed_weth=pos.owed_weth if pos else 0, owed_usdc=pos.owed_usdc if pos else 0,
+            lp_weth=pos.amount0 if pos else 0, lp_usdc=pos.amount1 if pos else 0,
+            owed_weth=pos.owed0 if pos else 0, owed_usdc=pos.owed1 if pos else 0,
             hedge_size=hs.short_size, hedge_upnl=hs.unrealized_pnl, hl_account=hs.account_value,
-            wallet_weth=wallet_weth, wallet_usdc=wallet_usdc, equity=r.equity,
+            wallet_weth=bal0, wallet_usdc=bal1, equity=r.equity,
             mark_px=hs.mark_px)
 
         r.paused = self.paused
@@ -139,28 +164,39 @@ class Rebalancer:
             log.info("일시정지 상태 — 관측만 수행")
             return r
 
+        if eth_usd <= 0:
+            # USD 환산 불가(HL 마크 0 등) — 모든 달러 수치가 0으로 보여 오판하므로 관측만
+            r.alerts.append("🚨 USD 환산가를 얻지 못했습니다 — 이번 사이클은 관측만 합니다.")
+            return r
+
         # 1) 신규 진입
         if pos is None:
-            deployable = min(wallet_usdc + wallet_weth * st.price, self.s.lp_max_usdc)
+            deployable = min(r.wallet_usd, self.s.lp_max_usdc)
             if deployable >= 100:
-                # 헤지 레그 증거금 선확인 — 없으면 LP만 잡혀 단방향 노출이 되므로 진입 보류
-                need_margin = deployable * 0.5 / self.s.hl_max_leverage * 1.2
+                # 헤지 레그 증거금 선확인 — 없으면 LP만 잡혀 단방향 노출이 되므로 진입 보류.
+                # full_delta 페어는 LP 전액이 ETH 델타 → 숏 노셔널 = LP 가치 (0.5 → 1.0)
+                delta_frac = 1.0 if self.full_delta else 0.5
+                need_margin = deployable * delta_frac / self.s.hl_max_leverage * 1.2
                 if hs.account_value < need_margin:
                     r.alerts.append(
                         f"⏸ LP 진입을 미뤘습니다 — 헤지할 돈이 부족합니다.\n"
                         f"헤지 잔고 ${hs.account_value:,.0f} · 필요 ${need_margin:,.0f}\n"
                         f"USDC를 넣어주시면 다음 사이클에 자동으로 들어갑니다.")
                     return r
+                # mint 예산은 token1 단위 (weth_usdc: USDC≈USD 그대로, cbeth_weth: WETH로 환산)
+                budget_t1 = deployable if self.price_is_usd else deployable / eth_usd
                 minted = await self._act(r, "mint",
                                          f"신규 LP 진입 ${deployable:,.0f} (±{self.s.lp_range_pct}%)",
-                                         lambda: self.lp.mint_centered(deployable))
+                                         lambda: self.lp.mint_centered(budget_t1, usd_value=deployable))
                 if not minted:
                     return r
                 pos = self._find_position_retry()
-                # RPC 지연으로 포지션 조회가 늦어도 헤지는 반드시 건다 —
-                # ±35% 레인지의 WETH 가치비율 ~0.42로 추정 (언헤지 방치가 더 위험)
-                target = (pos.weth_amount + pos.owed_weth) if pos \
-                    else deployable * 0.42 / st.price
+                # RPC 지연으로 포지션 조회가 늦어도 헤지는 반드시 건다 (언헤지 방치가 더 위험).
+                # 추정 델타 비율: full_delta 페어는 전액(1.0), weth_usdc는 ±35% 레인지의
+                # WETH 가치비율 ~0.42
+                est_frac = 1.0 if self.full_delta else 0.42
+                target = self._pos_delta(pos, st.price) if pos \
+                    else deployable * est_frac / eth_usd
                 await self._act(r, "hedge", f"초기 헤지 숏 {target:.4f} ETH",
                                 lambda: self.hedge.set_target_short(target))
             else:
@@ -175,7 +211,7 @@ class Rebalancer:
                 usd = r.lp_value
                 ok = await self._act(r, "rerange",
                                      f"레인지 재배치 (ratio {pos.range_ratio:.2f}, ${usd:,.0f})",
-                                     lambda: self._do_rerange(pos, usd))
+                                     lambda: self._do_rerange(pos, usd, eth_usd))
                 # 실패 시 쿨다운을 걸지 않는다 — 걸어버리면 오류 안내("다음 사이클에
                 # 자동 재시도")와 달리 레인지 밖에서 12시간 방치된다. close만 성공하고
                 # mint가 실패한 경우는 다음 사이클의 신규 진입 분기(쿨다운 무관)가 잡는다.
@@ -264,9 +300,12 @@ class Rebalancer:
                 time.sleep(wait_s)
         return None
 
-    def _do_rerange(self, pos, usd_total: float):
+    def _do_rerange(self, pos, usd_total: float, eth_usd: float):
         self.lp.close_position(pos)
-        self.lp.mint_centered(min(usd_total, self.s.lp_max_usdc))
+        usd = min(usd_total, self.s.lp_max_usdc)
+        budget_t1 = usd if self.price_is_usd else usd / eth_usd
+        self.lp.mint_centered(budget_t1, usd_value=usd)
         new_pos = self._find_position_retry()  # mint 직후 RPC 지연으로 안 보일 수 있음
         if new_pos:
-            self.hedge.set_target_short(new_pos.weth_amount + new_pos.owed_weth)
+            # full_delta 델타 환산에는 재배치 직후의 신선한 풀 가격을 쓴다 (weth_usdc는 미사용)
+            self.hedge.set_target_short(self._pos_delta(new_pos, self.lp.pool_state().price))
