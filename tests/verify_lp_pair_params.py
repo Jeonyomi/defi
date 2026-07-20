@@ -7,6 +7,7 @@ import math
 import sys
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8")  # cp949 콘솔에서 ≈·— 출력 보호
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from defi_agent import constants as C

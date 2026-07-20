@@ -98,7 +98,12 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
     실측(vol_src="ratio"). 창 시작 강제 2중: config LP_PAIR_SINCE(신규, 기본 0) +
     tg/_edge since=max(now-7d, since) 1차, compute_edge 내 인접 price 50% 급변 절단
     2차. weth_usdc는 구 산식 수치 일치 회귀 확인, tg 표기는 5번에서)
-  - [ ] 5. tg 표기 (WETH/USDC 고정 문구 → 페어 인지)
+  - [x] 5. tg 표기 — 2026-07-20, tests/verify_tg_pair.py 22건 통과
+    (CycleReport.eth_usd 신설(USD 환산가), LP_PAIRS에 label, 상태/액션 가격 표기
+    cbeth 모드는 "cbETH/WETH 1.1353 · ETH $X" 병기, 헤지 빈틈 $ 환산 eth_usd로
+    수정(비율×수량 버그 예방), edge 문구 "비율 출렁임"·vol_src=ratio는 정규
+    소스라 불안정 주석 제외, LP 줄에 페어 라벨. weth_usdc 수치 회귀 확인.
+    부수: verify 스크립트들 cp949 콘솔 인코딩 보호(utf-8 reconfigure))
   - [ ] 6. 통합: main.py 기동 경로 + weth_usdc 모드 무변경 회귀 확인(현재 라이브 설정으로 read-only 사이클)
 - [ ] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건)
 - [ ] 라이브 전환 실행 (위 0~6)

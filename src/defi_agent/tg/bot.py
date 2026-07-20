@@ -137,15 +137,19 @@ class TgInterface:
             return None
 
     @staticmethod
-    def _edge_lines(e: LpEdge | None) -> list[str]:
+    def _edge_lines(e: LpEdge | None, price_is_usd: bool = True) -> list[str]:
         """LP가 돈을 벌고 있는지 한 블록으로.
 
         용어를 쓰지 않는다: 감마손실 -> '가격변동 손실', 커버리지 -> '몇 %를 메움',
         변동성/손익분기 -> '출렁임'/'버틸 수 있는 한계'. m은 판정과 무관하므로
         (부호가 m에 안 걸린다 — analytics 참조) 본문에서 뺐다.
+
+        price_is_usd=False(cbeth 모드)면 출렁임의 주체가 ETH가 아니라 두 토큰의
+        교환비율이고, vol_src="ratio"가 정규 소스라 불안정 주석도 붙이지 않는다.
         """
         if e is None:
             return []
+        px_label = "ETH" if price_is_usd else "비율"
         icon = {"positive": "✅", "negative": "🔴", "marginal": "🟡", "unknown": "⏳"}[e.verdict]
         head = {
             "positive": "수수료가 손실보다 큼 — 벌고 있음",
@@ -157,13 +161,15 @@ class TgInterface:
             "",
             f"🧮 *LP 수지* {icon} _{e.window_h:.0f}시간 관측_",
             f"├ *{head}*",
-        ] + TgInterface._coverage_lines(e) + [
+        ] + TgInterface._coverage_lines(e, price_is_usd) + [
             f"├ 1년 기준: 수수료 {e.fee_apr * 100:+.0f}% "
             f"− 가격변동 {e.gamma_apr * 100:.0f}% = *{e.net_apr * 100:+.0f}%*",
-            f"├ ETH 출렁임 {e.vol * 100:.0f}% · 버틸 수 있는 한계 "
+            f"├ {px_label} 출렁임 {e.vol * 100:.0f}% · 버틸 수 있는 한계 "
             f"{e.breakeven_vol * 100:.0f}%",
         ]
-        if e.vol_src != "hl-30d":
+        # usd 모드에서 풀 slot0 폴백(vol_src="pool")은 과소추정이라 경고.
+        # cbeth 모드의 "ratio"는 정규 소스이므로 해당 없음 (analytics 참조).
+        if price_is_usd and e.vol_src != "hl-30d":
             out.append("├ _출렁임 수치 불안정 — 참고만_")
         if e.verdict == "negative":
             out.append("└ _범위를 넓히거나 좁혀도 안 바뀜_")
@@ -172,21 +178,30 @@ class TgInterface:
         return out
 
     @staticmethod
-    def _coverage_lines(e: LpEdge) -> list[str]:
+    def _coverage_lines(e: LpEdge, price_is_usd: bool = True) -> list[str]:
         """실제로 번 돈 vs 잃은 돈. 모델(APR 추정)과 독립적인 실측 교차확인.
 
         경로의존적이라 APR로 안 바꾸고 누적 $와 비율로만 보여준다.
         """
+        px_label = "ETH" if price_is_usd else "비율"
         cov = e.coverage
         # IL이 몇 센트 미만이면 분모가 0에 가까워 비율이 수천 %로 튄다(무의미).
         if cov is None or abs(e.il_usd) < 0.05:
             return [f"├ 수수료 ${e.fee_usd:.4f} · 가격변동 손실 없음 "
-                    f"_(ETH {e.px_chg * 100:+.1f}%)_"]
+                    f"_({px_label} {e.px_chg * 100:+.1f}%)_"]
         return [
             f"├ 번 돈 ${e.fee_usd:.4f} · 잃은 돈 ${abs(e.il_usd):.4f}",
             f"├ 수수료가 손실의 *{cov * 100:.0f}%* 를 메움 _(100%면 본전)_",
-            f"├ _ETH {e.px_chg * 100:+.1f}% — 되돌아오면 손실도 사라짐_",
+            f"├ _{px_label} {e.px_chg * 100:+.1f}% — 되돌아오면 손실도 사라짐_",
         ]
+
+    def _px_label(self, r: CycleReport) -> str:
+        """가격 표기. usd 페어는 풀 가격이 곧 ETH 달러가.
+        cbeth 페어는 풀 가격이 비율(~1.135)이라 그대로 $로 쓰면 거짓 —
+        비율과 ETH 마크가(달러)를 나란히 보여준다."""
+        if self.rb.price_is_usd:
+            return f"ETH ${r.price:,.2f}"
+        return f"{self.rb.pair_label} {r.price:.4f} · ETH ${r.eth_usd:,.2f}"
 
     def _status_text(self, r: CycleReport, chg: tuple[float, float, bool] | None = None,
                      title: str = "상태", edge: LpEdge | None = None) -> str:
@@ -195,9 +210,10 @@ class TgInterface:
             f"`{_kst(r.ts)} KST`",
             "",
             f"💰 *총자산 ${r.equity:,.2f}*{self._chg_label(chg)}",
-            f"└ LP ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f} · 지갑 ${r.wallet_usd:,.2f}",
+            f"└ LP {self.rb.pair_label} ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f}"
+            f" · 지갑 ${r.wallet_usd:,.2f}",
             "",
-            f"📍 *안전 상태* · ETH ${r.price:,.2f}",
+            f"📍 *안전 상태* · {self._px_label(r)}",
         ]
         if r.lp_value <= 0:
             out.append("└ LP 없음 — 진입 대기 중")
@@ -206,12 +222,13 @@ class TgInterface:
             room = 1 - r.range_ratio
             trigger_room = 1 - self.s.rerange_trigger
             # 드리프트(%)보다 '헤지 안 된 ETH가 몇 달러어치인가'가 바로 읽힌다.
+            # 달러 환산은 eth_usd — cbeth 모드의 r.price는 비율이라 $가 아니다.
             gap = abs(r.lp_delta - r.hedge_size)
             out += [
                 f"├ 가격범위 여유 {room:.0%} "
                 f"{_mark(r.range_ratio, 0.70, self.s.rerange_trigger)}"
                 f" _({trigger_room:.0%} 남으면 재배치)_",
-                f"├ 헤지 빈틈 {gap:.4f} ETH ≈ ${gap * r.price:,.0f} "
+                f"├ 헤지 빈틈 {gap:.4f} ETH ≈ ${gap * r.eth_usd:,.0f} "
                 f"_(LP {r.lp_delta:.4f} / 숏 {r.hedge_size:.4f})_",
                 f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.0, 2.5)} _(2.0x면 경보)_",
             ]
@@ -224,7 +241,7 @@ class TgInterface:
             f"├ 펀딩 {r.funding_apr:+.1f}%/년 {'받는 중 ✅' if r.funding_apr >= 0 else '내는 중 ⚠️'}",
             f"└ 숏 평가손익 {'+' if r.hedge_upnl >= 0 else '-'}${abs(r.hedge_upnl):,.2f}",
         ]
-        out += self._edge_lines(edge)
+        out += self._edge_lines(edge, self.rb.price_is_usd)
         return "\n".join(out)
 
     async def _pnl_text(self) -> str:
@@ -250,7 +267,7 @@ class TgInterface:
 
     def _action_text(self, a: str, r: CycleReport) -> str:
         return (f"✅ *실행됨* · `{_kst(r.ts, '%H:%M')} KST`\n{a}\n"
-                f"_총자산 ${r.equity:,.2f} · ETH ${r.price:,.2f}_")
+                f"_총자산 ${r.equity:,.2f} · {self._px_label(r)}_")
 
     def _alert_text(self, a: str, r: CycleReport) -> str:
         # 쿨다운 시간은 붙이지 않는다 — 알림 시스템의 내부 사정이지 사용자가 할 일이 아니다.

@@ -61,7 +61,8 @@ def _short_err(e: Exception) -> str:
 @dataclass
 class CycleReport:
     ts: float
-    price: float = 0.0
+    price: float = 0.0          # 풀 가격 — weth_usdc는 USD가, cbeth_weth는 비율(~1.135)
+    eth_usd: float = 0.0        # USD 환산가 (usd 페어=price, 아니면 HL ETH 마크)
     equity: float = 0.0
     lp_value: float = 0.0
     hedge_size: float = 0.0
@@ -90,6 +91,7 @@ class Rebalancer:
         # 페어 해석 플래그 (constants.LP_PAIRS 프리셋 — aerodrome이 이미 로드해 둠)
         self.price_is_usd: bool = lp.pair["price_is_usd"]
         self.full_delta: bool = lp.pair["full_delta"]
+        self.pair_label: str = lp.pair["label"]
 
     def _pos_delta(self, pos, price: float) -> float:
         """포지션의 ETH 델타. full_delta 페어는 양쪽 토큰 전체(token0은 비율 환산), 아니면 token0만."""
@@ -128,6 +130,7 @@ class Rebalancer:
         # USD 환산가: USD 쿼트 페어는 풀 가격 그대로, 아니면 HL ETH 마크
         # (cbeth_weth의 풀 가격은 비율 ~1.135일 뿐 USD가 아니다)
         eth_usd = st.price if self.price_is_usd else hs.mark_px
+        r.eth_usd = eth_usd
         # token1 단위 가치 → USD 환산 계수 (weth_usdc: token1=USDC≈USD → 1)
         to_usd = 1.0 if self.price_is_usd else eth_usd
 

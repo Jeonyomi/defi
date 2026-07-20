@@ -24,10 +24,12 @@ CBETH_DECIMALS = 18
 LP_PAIRS = {
     "weth_usdc": {"token0": WETH, "token1": USDC,
                   "dec0": WETH_DECIMALS, "dec1": USDC_DECIMALS,
-                  "price_is_usd": True, "full_delta": False},
+                  "price_is_usd": True, "full_delta": False,
+                  "label": "WETH/USDC"},
     "cbeth_weth": {"token0": CBETH, "token1": WETH,
                    "dec0": CBETH_DECIMALS, "dec1": WETH_DECIMALS,
-                   "price_is_usd": False, "full_delta": True},
+                   "price_is_usd": False, "full_delta": True,
+                   "label": "cbETH/WETH"},
 }
 
 # ── Aerodrome Slipstream (배포 전 재검증 필요) ────────────────
