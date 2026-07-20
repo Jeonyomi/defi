@@ -117,7 +117,7 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
   비침범 실증), 자동진입은 "지갑 $4 < $100"으로 정상 보류, mint 예행 수학 spacing=1
   틱 1067..1467에 현재틱 1269 포함·frac0=0.494·필요수량 합=예산 일치, 초기 헤지
   추정 0.0537 ETH ≈ 계획 0.0535. tx/DB/tg 전부 0건 — 라이브 전환(0~6) 선행 조건 충족)
-- [ ] 라이브 전환 실행 (위 0~6) — 실행 도구: scripts/migrate_cbeth_weth.py (status/close/swap-to-weth/swap-to-cbeth) + scripts/ps_stop_bot.ps1·ps_start_bot.ps1
+- [x] 라이브 전환 실행 (위 0~6) — 2026-07-20 17:33 완료 (하위 전 항목 [x]) — 실행 도구: scripts/migrate_cbeth_weth.py (status/close/swap-to-weth/swap-to-cbeth) + scripts/ps_stop_bot.ps1·ps_start_bot.ps1
   - [x] 0. 사이클 틈 봇 정지 — 2026-07-20 17:31 (직전 사이클 17:26:20 완료 확인,
     PID 14568/35708 두 프로세스 정지, 잔존 없음 Get-CimInstance 확인)
   - [x] 2. 구 LP 청산 — 17:32, #73154313 decrease/collect/burn 3tx 확정, NFT 소각 실측.
@@ -134,5 +134,9 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
     LP 델타 0.0548 = $101.99, 숏 0.0504 (갭 $8.1 — HL 최소주문 $15 미만이라 봇이 수렴 대기,
     ≤$20 규율 내), lev 1.65x, 대기 USDC 95.43 비침범, 지갑 더스트 0.
     첫 사이클 로그 lp=$0.00은 리포트 수치가 mint 이전 조회분이기 때문 — 다음 사이클부터 정상 표기
-  - [ ] 6b. 30분 후 두 번째 사이클: 드리프트·알림 정상 (다음 발화에서 확인)
+  - [x] 6b. 후속 사이클 검증 — 2026-07-20 17:53 (사이클 주기는 실제 10분: 17:43·17:53
+    두 사이클 연속 정상. lp=$101.72→$101.91, delta=0.0548 유지, hedge=0.0504,
+    드리프트 8.0% → 재헤지 보류 "$8 < $15" 분기 정상 작동(≤$20 규율 내), range=1%,
+    재기동 후 ERROR/WARN 0건, TG 알림 전용 모드 정상. equity $163.88은 대기 USDC
+    $95.43 미포함 값 — 합산 $259.31로 전환 전 총자산과 일치(자금 누수 없음))
 - [ ] 전환 후 24h 관측: 수수료 적재·비율 변동성·재헤지 빈도 확인, MJ에게 결과 보고
