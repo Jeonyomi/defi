@@ -4,8 +4,11 @@
 서브커맨드:
   status          read-only 현재 상태 (구·신 풀, 지갑, HL) — tx 없음
   close           [tx] 구 WETH/USDC LP 전량 청산 (실행 순서 2)
+  close-cbeth     [tx] 신 cbETH/WETH LP 전량 청산 (증액 재전개용)
   swap-to-weth    [tx] 구 풀에서 USDC→WETH: 지갑 ETH-eq를 TARGET_LP_USD까지 증액 (순서 4 전반)
   swap-to-cbeth   [tx] 신 풀에서 WETH→cbETH: ±2% mint 구성비(frac0)만큼 정렬 (순서 4 후반)
+
+TARGET_LP_USD는 env 오버라이드 가능 (기본 102). 증액 시: TARGET_LP_USD=395 python scripts/... swap-to-weth
 
 각 tx 서브커맨드는 실행 전 계산 근거를 출력하고 실행 후 온체인 실측을 재출력한다.
 """
@@ -18,8 +21,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 # 자동진입 게이트(지갑 ETH-eq ≥ $100) 위에 가격 드리프트 버퍼 $2.
-# lev = 102/61.4 ≈ 1.66x ≤ 1.67 (문서 예산 규칙 유지)
-TARGET_LP_USD = 102.0
+# lev = 목표/HL증거금 ≤ 1.67 (문서 예산 규칙 유지). 증액 시 env로 오버라이드.
+TARGET_LP_USD = float(os.environ.get("TARGET_LP_USD", "102.0"))
 
 
 def load(mode: str):
@@ -78,7 +81,16 @@ def cmd_status():
     s2, c2, lp2 = build("cbeth_weth")
     st2 = lp2.pool_state()
     print(f"[신 풀 cbeth_weth] {st2.pool} tick={st2.tick} ratio={st2.price:.4f} WETH/cbETH")
-    eth_eq = bals["WETH"] + bals["cbETH"] * st2.price + (pos.amount0 + pos.owed0 if pos else 0)
+    pos2 = lp2.find_position()
+    if pos2:
+        lp2_eq = (pos2.amount0 + pos2.owed0) * st2.price + pos2.amount1 + pos2.owed1
+        print(f"  포지션 #{pos2.token_id}: cbETH {pos2.amount0:.6f} + WETH {pos2.amount1:.6f} "
+              f"(ETH-eq {lp2_eq:.4f})")
+    else:
+        lp2_eq = 0.0
+        print("  포지션 없음")
+    eth_eq = (bals["WETH"] + bals["cbETH"] * st2.price + lp2_eq
+              + (pos.amount0 + pos.owed0 if pos else 0))
     print(f"[델타] 지갑+LP ETH-eq {eth_eq:.4f} vs HL 숏 {hs.short_size:.4f} "
           f"→ 갭 ${abs(eth_eq - hs.short_size) * hs.mark_px:.1f}")
 
@@ -96,13 +108,29 @@ def cmd_close():
     print_wallet(c, lp, "청산 후")
 
 
+def cmd_close_cbeth():
+    """증액 재전개용: 신 풀 cbETH/WETH 포지션 청산 (수수료 수거 포함)."""
+    s, c, lp = build("cbeth_weth")
+    pos = lp.find_position()
+    assert pos, "청산할 cbeth_weth 포지션 없음"
+    print(f"청산 대상 #{pos.token_id}: cbETH {pos.amount0:.6f} + WETH {pos.amount1:.6f} "
+          f"+ owed({pos.owed0:.6f}, {pos.owed1:.6f})")
+    print_wallet(c, lp, "청산 전")
+    lp.close_position(pos)
+    assert lp.find_position() is None, "청산 후에도 포지션이 조회됨"
+    print("청산 완료 — NFT 소각까지 확인")
+    print_wallet(c, lp, "청산 후")
+
+
 def cmd_swap_to_weth():
     s, c, lp = build("weth_usdc")
     st = lp.pool_state()
     bals = print_wallet(c, lp, "스왑 전")
+    # 보유 cbETH도 ETH-eq에 포함 (증액 재전개 시 지갑에 cbETH가 남아있는 상태에서 호출됨)
+    ratio = build("cbeth_weth")[2].pool_state().price if bals["cbETH"] > 1e-9 else 0.0
     target_eth = TARGET_LP_USD / st.price
-    diff = target_eth - bals["WETH"]
-    print(f"목표 {target_eth:.6f} WETH (${TARGET_LP_USD} @ ${st.price:.2f}) — 부족분 {diff:.6f}")
+    diff = target_eth - (bals["WETH"] + bals["cbETH"] * ratio)
+    print(f"목표 {target_eth:.6f} ETH-eq (${TARGET_LP_USD} @ ${st.price:.2f}) — 부족분 {diff:.6f}")
     if diff * st.price < 1.0:
         print("부족분 $1 미만 — 스왑 생략")
         return
@@ -132,5 +160,5 @@ def cmd_swap_to_cbeth():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
-    {"status": cmd_status, "close": cmd_close,
+    {"status": cmd_status, "close": cmd_close, "close-cbeth": cmd_close_cbeth,
      "swap-to-weth": cmd_swap_to_weth, "swap-to-cbeth": cmd_swap_to_cbeth}[cmd]()
