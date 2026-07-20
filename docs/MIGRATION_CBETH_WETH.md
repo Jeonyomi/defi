@@ -82,7 +82,7 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
 ## 진행 체크리스트 (완료 시 [x] + 타임스탬프 기입)
 
 - [x] 풀 온체인 검증 (2026-07-20, 이 문서 상단)
-- [ ] 코드 일반화 + 커밋 (라이브 무영향: LP_PAIR 기본값 weth_usdc)
+- [x] 코드 일반화 + 커밋 (라이브 무영향: LP_PAIR 기본값 weth_usdc) — 2026-07-20 16:20, 하위 6항목 전부 완료
   - [x] 1. constants(CBETH·LP_PAIRS) + config(LP_PAIR 검증) — 2026-07-20 13:35, 단위검증 통과
   - [x] 2. lp/aerodrome.py 파라미터화 — 2026-07-20 13:58, tests/verify_lp_pair_params.py 17건 통과
     (Position 필드 amount0/1·owed0/1로 일반화 + weth_amount 등 호환 별칭 유지 → rebalancer 무수정,
@@ -104,7 +104,12 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
     수정(비율×수량 버그 예방), edge 문구 "비율 출렁임"·vol_src=ratio는 정규
     소스라 불안정 주석 제외, LP 줄에 페어 라벨. weth_usdc 수치 회귀 확인.
     부수: verify 스크립트들 cp949 콘솔 인코딩 보호(utf-8 reconfigure))
-  - [ ] 6. 통합: main.py 기동 경로 + weth_usdc 모드 무변경 회귀 확인(현재 라이브 설정으로 read-only 사이클)
+  - [x] 6. 통합 — 2026-07-20 16:20, tests/verify_integration_readonly.py 30건 통과
+    (main.py 무수정으로 새 시그니처와 정합 확인. 라이브 .env(weth_usdc) 그대로 amain()과
+    동일한 구성 순서 + run_cycle 1회를 read-only로 실행: send 몽키패치·exchange=None·
+    FakeStore 3중 차단으로 tx/DB 쓰기/tg 발송 0건. 결과를 라이브 봇 16:16 사이클 로그와
+    대조 — equity 259.27 vs 259.28, lp 192.96 vs 193.02, delta 0.0475 vs 0.0474,
+    hedge 0.0504 일치. tg 상태 렌더도 실데이터로 통과)
 - [ ] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건)
 - [ ] 라이브 전환 실행 (위 0~6)
 - [ ] 전환 후 24h 관측: 수수료 적재·비율 변동성·재헤지 빈도 확인, MJ에게 결과 보고
