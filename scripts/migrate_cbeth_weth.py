@@ -1,0 +1,136 @@
+"""cbETH/WETH 전환 수동 실행 (docs/MIGRATION_CBETH_WETH.md 실행 순서 2·4).
+
+봇 정지 상태에서만 실행할 것 (포트 47821 락과 무관한 별도 프로세스 — nonce 충돌 방지).
+서브커맨드:
+  status          read-only 현재 상태 (구·신 풀, 지갑, HL) — tx 없음
+  close           [tx] 구 WETH/USDC LP 전량 청산 (실행 순서 2)
+  swap-to-weth    [tx] 구 풀에서 USDC→WETH: 지갑 ETH-eq를 TARGET_LP_USD까지 증액 (순서 4 전반)
+  swap-to-cbeth   [tx] 신 풀에서 WETH→cbETH: ±2% mint 구성비(frac0)만큼 정렬 (순서 4 후반)
+
+각 tx 서브커맨드는 실행 전 계산 근거를 출력하고 실행 후 온체인 실측을 재출력한다.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+# 자동진입 게이트(지갑 ETH-eq ≥ $100) 위에 가격 드리프트 버퍼 $2.
+# lev = 102/61.4 ≈ 1.66x ≤ 1.67 (문서 예산 규칙 유지)
+TARGET_LP_USD = 102.0
+
+
+def load(mode: str):
+    """mode별 Settings — cbeth는 프로세스 env 오버라이드(.env 파일 무수정)."""
+    if mode == "cbeth_weth":
+        os.environ.update({"LP_PAIR": "cbeth_weth", "LP_TICK_SPACING": "1",
+                           "LP_RANGE_PCT": "2", "LP_MAX_USDC": "110"})
+    else:
+        os.environ.update({"LP_PAIR": "weth_usdc", "LP_TICK_SPACING": "100",
+                           "LP_RANGE_PCT": "35", "LP_MAX_USDC": "500"})
+    from defi_agent.config import load_settings
+    return load_settings()
+
+
+def build(mode: str):
+    from defi_agent.chain.base_client import BaseClient
+    from defi_agent.lp.aerodrome import AerodromeLP
+    s = load(mode)
+    assert not s.dry_run, "이 스크립트는 LIVE 전환용 — DRY_RUN이면 .env 확인"
+    c = BaseClient(s)
+    lp = AerodromeLP(c)
+    lp.startup_verify()
+    return s, c, lp
+
+
+def hl_state(s):
+    from defi_agent.hedge.hyperliquid_client import HyperliquidHedge
+    return HyperliquidHedge(s).state()
+
+
+def print_wallet(c, lp, label: str):
+    from defi_agent import constants as C
+    eth = c.w3.eth.get_balance(c.address) / 1e18
+    bals = {}
+    for name, addr, dec in [("WETH", C.WETH, 18), ("USDC", C.USDC, 6), ("cbETH", C.CBETH, 18)]:
+        bals[name] = c.contract(addr, C.ERC20_ABI).functions.balanceOf(c.address).call() / 10**dec
+    print(f"[{label}] 지갑 {c.address}")
+    print(f"  가스 ETH {eth:.6f} | WETH {bals['WETH']:.6f} | cbETH {bals['cbETH']:.6f} | USDC {bals['USDC']:.2f}")
+    return bals
+
+
+def cmd_status():
+    s, c, lp = build("weth_usdc")
+    st = lp.pool_state()
+    pos = lp.find_position()
+    print(f"[구 풀 weth_usdc] {st.pool} tick={st.tick} price=${st.price:.2f}")
+    if pos:
+        print(f"  포지션 #{pos.token_id}: WETH {pos.amount0:.6f} + USDC {pos.amount1:.2f} "
+              f"(owed {pos.owed0:.6f}/{pos.owed1:.4f}) range={pos.range_ratio:.2f}")
+    else:
+        print("  포지션 없음")
+    bals = print_wallet(c, lp, "지갑")
+    hs = hl_state(s)
+    print(f"[HL] 숏 {hs.short_size:.4f} ETH @ mark ${hs.mark_px:.2f} | 증거금 ${hs.account_value:.2f} "
+          f"| uPnL ${hs.unrealized_pnl:.2f}")
+    s2, c2, lp2 = build("cbeth_weth")
+    st2 = lp2.pool_state()
+    print(f"[신 풀 cbeth_weth] {st2.pool} tick={st2.tick} ratio={st2.price:.4f} WETH/cbETH")
+    eth_eq = bals["WETH"] + bals["cbETH"] * st2.price + (pos.amount0 + pos.owed0 if pos else 0)
+    print(f"[델타] 지갑+LP ETH-eq {eth_eq:.4f} vs HL 숏 {hs.short_size:.4f} "
+          f"→ 갭 ${abs(eth_eq - hs.short_size) * hs.mark_px:.1f}")
+
+
+def cmd_close():
+    s, c, lp = build("weth_usdc")
+    pos = lp.find_position()
+    assert pos, "청산할 weth_usdc 포지션 없음"
+    print(f"청산 대상 #{pos.token_id}: WETH {pos.amount0:.6f} + USDC {pos.amount1:.2f} "
+          f"+ owed({pos.owed0:.6f}, {pos.owed1:.4f})")
+    print_wallet(c, lp, "청산 전")
+    lp.close_position(pos)
+    assert lp.find_position() is None, "청산 후에도 포지션이 조회됨"
+    print("청산 완료 — NFT 소각까지 확인")
+    print_wallet(c, lp, "청산 후")
+
+
+def cmd_swap_to_weth():
+    s, c, lp = build("weth_usdc")
+    st = lp.pool_state()
+    bals = print_wallet(c, lp, "스왑 전")
+    target_eth = TARGET_LP_USD / st.price
+    diff = target_eth - bals["WETH"]
+    print(f"목표 {target_eth:.6f} WETH (${TARGET_LP_USD} @ ${st.price:.2f}) — 부족분 {diff:.6f}")
+    if diff * st.price < 1.0:
+        print("부족분 $1 미만 — 스왑 생략")
+        return
+    amount_in = int(diff * st.price * 1e6)  # USDC 6dp
+    min_out = int(diff * 0.995 * 1e18)
+    assert bals["USDC"] >= amount_in / 1e6, "USDC 잔고 부족"
+    lp.swap(lp.t1_addr, amount_in, min_out)  # USDC→WETH
+    print_wallet(c, lp, "스왑 후")
+
+
+def cmd_swap_to_cbeth():
+    from defi_agent.lp import math as clmath
+    s, c, lp = build("cbeth_weth")
+    st = lp.pool_state()
+    bals = print_wallet(c, lp, "스왑 전")
+    budget_t1 = bals["WETH"] + bals["cbETH"] * st.price  # 총 ETH-eq (WETH 단위)
+    spacing = s.lp_tick_spacing
+    tl = clmath.align_tick(clmath.price_to_tick(st.price * (1 - s.lp_range_pct / 100), 18, 18), spacing)
+    tu = clmath.align_tick(clmath.price_to_tick(st.price * (1 + s.lp_range_pct / 100), 18, 18), spacing)
+    _a0, _a1, frac0 = clmath.amounts_for_budget(st.sqrt_price_x96, tl, tu, int(budget_t1 * 1e18))
+    print(f"ratio={st.price:.4f} ticks[{tl},{tu}] frac0={frac0:.4f} budget={budget_t1:.6f} WETH")
+    lp.prepare_ratio(budget_t1, frac0)  # WETH→cbETH (신 풀 spacing=1)
+    bals2 = print_wallet(c, lp, "스왑 후")
+    eth_eq = bals2["WETH"] + bals2["cbETH"] * st.price
+    print(f"스왑 후 ETH-eq {eth_eq:.6f} (목표 구성비 cbETH {frac0:.1%})")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    {"status": cmd_status, "close": cmd_close,
+     "swap-to-weth": cmd_swap_to_weth, "swap-to-cbeth": cmd_swap_to_cbeth}[cmd]()
