@@ -110,6 +110,12 @@ snapshots에 mark_px 이미 있음 → analytics USD 환산에 사용.
     FakeStore 3중 차단으로 tx/DB 쓰기/tg 발송 0건. 결과를 라이브 봇 16:16 사이클 로그와
     대조 — equity 259.27 vs 259.28, lp 192.96 vs 193.02, delta 0.0475 vs 0.0474,
     hedge 0.0504 일치. tg 상태 렌더도 실데이터로 통과)
-- [ ] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건)
+- [x] DRY_RUN=true + cbeth_weth 설정으로 read-only 1사이클 검증 (tx 0건) — 2026-07-20,
+  tests/verify_dryrun_cbeth.py 40건 통과 (라이브 .env 무수정 — 프로세스 env 오버라이드만.
+  풀=문서 실측 주소 해석, 비율 1.1353, find_position이 구 weth_usdc NFT를 페어 필터로
+  제외(오매칭 없음), eth_usd=HL 마크 $1864, 지갑 잔고 조회에 USDC 미포함(대기 $93
+  비침범 실증), 자동진입은 "지갑 $4 < $100"으로 정상 보류, mint 예행 수학 spacing=1
+  틱 1067..1467에 현재틱 1269 포함·frac0=0.494·필요수량 합=예산 일치, 초기 헤지
+  추정 0.0537 ETH ≈ 계획 0.0535. tx/DB/tg 전부 0건 — 라이브 전환(0~6) 선행 조건 충족)
 - [ ] 라이브 전환 실행 (위 0~6)
 - [ ] 전환 후 24h 관측: 수수료 적재·비율 변동성·재헤지 빈도 확인, MJ에게 결과 보고
