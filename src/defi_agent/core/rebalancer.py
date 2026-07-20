@@ -303,12 +303,39 @@ class Rebalancer:
                 time.sleep(wait_s)
         return None
 
+    def _wallet_delta(self) -> float:
+        """지갑 보유분만의 ETH 델타 — LP가 없는(청산 직후·mint 실패) 상태의 총델타."""
+        bal0, bal1 = self.lp.wallet_balances()
+        if self.full_delta:
+            return bal0 * self.lp.pool_state().price + bal1
+        return bal0
+
     def _do_rerange(self, pos, usd_total: float, eth_usd: float):
+        # 재배치 델타 규율: 델타를 바꾸는 단계 직후 같은 흐름에서 헤지를 동기화한다.
+        # full_delta 페어는 청산→스왑→mint 내내 총델타(지갑+LP)가 불변이라 자연 안전하지만,
+        # usd 페어는 mint 내부 스왑이 델타를 바꾸고, 실패·조회지연 경로는 페어 무관하게
+        # 헤지 미동기화 상태로 다음 사이클(10분)까지 노출을 방치했다 (7/20 증액 전개에서
+        # 수동 절차의 같은 공백으로 ~$290 롱이 4분 노출된 실사례의 봇 경로 버전).
         self.lp.close_position(pos)
         usd = min(usd_total, self.s.lp_max_usdc)
         budget_t1 = usd if self.price_is_usd else usd / eth_usd
-        self.lp.mint_centered(budget_t1, usd_value=usd)
+        try:
+            self.lp.mint_centered(budget_t1, usd_value=usd)
+        except Exception:
+            # mint 실패 — 청산분이 전부 지갑에 있으므로 지갑 실측 델타로 즉시 재헤지하고
+            # 원래 오류를 올린다 (_act가 기록·알림, 다음 사이클 진입 분기가 mint 재시도).
+            try:
+                self.hedge.set_target_short(self._wallet_delta())
+            except Exception:  # noqa: BLE001 — 재헤지 실패가 mint 오류를 가리면 안 된다
+                log.exception("mint 실패 후 지갑 델타 재헤지도 실패")
+            raise
         new_pos = self._find_position_retry()  # mint 직후 RPC 지연으로 안 보일 수 있음
         if new_pos:
             # full_delta 델타 환산에는 재배치 직후의 신선한 풀 가격을 쓴다 (weth_usdc는 미사용)
-            self.hedge.set_target_short(self._pos_delta(new_pos, self.lp.pool_state().price))
+            target = self._pos_delta(new_pos, self.lp.pool_state().price)
+        else:
+            # 조회 지연이어도 헤지는 미루지 않는다 — 진입 경로와 같은 추정치로 즉시
+            # 동기화하고, 다음 사이클 드리프트 분기가 실측으로 보정한다.
+            est_frac = 1.0 if self.full_delta else 0.42
+            target = usd * est_frac / eth_usd
+        self.hedge.set_target_short(target)

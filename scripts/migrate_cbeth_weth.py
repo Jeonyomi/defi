@@ -7,6 +7,11 @@
   close-cbeth     [tx] 신 cbETH/WETH LP 전량 청산 (증액 재전개용)
   swap-to-weth    [tx] 구 풀에서 USDC→WETH: 지갑 ETH-eq를 TARGET_LP_USD까지 증액 (순서 4 전반)
   swap-to-cbeth   [tx] 신 풀에서 WETH→cbETH: ±2% mint 구성비(frac0)만큼 정렬 (순서 4 후반)
+  sync-hedge      [tx-HL] 숏을 총델타(지갑+양풀 LP)에 즉시 수렴 — 수동 개입 후 갭 정리용
+
+재배치 델타 규율: 모든 tx 서브커맨드는 끝에서 sync-hedge를 자동 수행한다.
+(7/20 증액 전개에서 스왑 19:05 ~ 헤지 증액 19:09 사이 ~$290 롱이 4분 노출된 재발 방지 —
+델타를 바꾸는 단계와 헤지 조정은 같은 프로세스 안에서 붙어 실행돼야 한다.)
 
 TARGET_LP_USD는 env 오버라이드 가능 (기본 102). 증액 시: TARGET_LP_USD=395 python scripts/... swap-to-weth
 
@@ -53,15 +58,49 @@ def hl_state(s):
     return HyperliquidHedge(s).state()
 
 
-def print_wallet(c, lp, label: str):
+def read_wallet(c):
     from defi_agent import constants as C
-    eth = c.w3.eth.get_balance(c.address) / 1e18
     bals = {}
     for name, addr, dec in [("WETH", C.WETH, 18), ("USDC", C.USDC, 6), ("cbETH", C.CBETH, 18)]:
         bals[name] = c.contract(addr, C.ERC20_ABI).functions.balanceOf(c.address).call() / 10**dec
+    return bals
+
+
+def print_wallet(c, lp, label: str):
+    eth = c.w3.eth.get_balance(c.address) / 1e18
+    bals = read_wallet(c)
     print(f"[{label}] 지갑 {c.address}")
     print(f"  가스 ETH {eth:.6f} | WETH {bals['WETH']:.6f} | cbETH {bals['cbETH']:.6f} | USDC {bals['USDC']:.2f}")
     return bals
+
+
+def measure_delta():
+    """지갑 + 구·신 풀 LP의 총 ETH-eq 델타와 HL 상태를 실측 (read-only)."""
+    s, c, lp = build("weth_usdc")
+    pos = lp.find_position()
+    old_delta = (pos.amount0 + pos.owed0) if pos else 0.0
+    bals = read_wallet(c)
+    s2, c2, lp2 = build("cbeth_weth")
+    st2 = lp2.pool_state()
+    pos2 = lp2.find_position()
+    lp2_eq = ((pos2.amount0 + pos2.owed0) * st2.price + pos2.amount1 + pos2.owed1) if pos2 else 0.0
+    delta = bals["WETH"] + bals["cbETH"] * st2.price + lp2_eq + old_delta
+    return delta, hl_state(s2), s2
+
+
+def sync_hedge():
+    """숏을 총델타에 즉시 수렴. 델타를 바꾸는 모든 tx 서브커맨드가 끝에서 자동 호출한다."""
+    from defi_agent.hedge.hyperliquid_client import HyperliquidHedge
+    delta, hs, s = measure_delta()
+    gap = (delta - hs.short_size) * hs.mark_px
+    print(f"[헤지 동기화] 총델타 {delta:.4f} ETH vs 숏 {hs.short_size:.4f} → 갭 ${gap:+.1f}")
+    if abs(gap) < 15:
+        print("  갭 < $15 (HL 최소주문) — 조정 생략, 동기화 상태 유지")
+        return
+    HyperliquidHedge(s).set_target_short(delta)
+    hs2 = hl_state(s)
+    left = (delta - hs2.short_size) * hs2.mark_px
+    print(f"  조정 완료: 숏 {hs2.short_size:.4f} ETH → 잔여 갭 ${left:+.1f}")
 
 
 def cmd_status():
@@ -106,6 +145,7 @@ def cmd_close():
     assert lp.find_position() is None, "청산 후에도 포지션이 조회됨"
     print("청산 완료 — NFT 소각까지 확인")
     print_wallet(c, lp, "청산 후")
+    sync_hedge()
 
 
 def cmd_close_cbeth():
@@ -120,6 +160,7 @@ def cmd_close_cbeth():
     assert lp.find_position() is None, "청산 후에도 포지션이 조회됨"
     print("청산 완료 — NFT 소각까지 확인")
     print_wallet(c, lp, "청산 후")
+    sync_hedge()
 
 
 def cmd_swap_to_weth():
@@ -139,6 +180,7 @@ def cmd_swap_to_weth():
     assert bals["USDC"] >= amount_in / 1e6, "USDC 잔고 부족"
     lp.swap(lp.t1_addr, amount_in, min_out)  # USDC→WETH
     print_wallet(c, lp, "스왑 후")
+    sync_hedge()  # 델타가 늘어난 직후 — 여기서 바로 숏 증액 (재배치 델타 규율)
 
 
 def cmd_swap_to_cbeth():
@@ -156,9 +198,11 @@ def cmd_swap_to_cbeth():
     bals2 = print_wallet(c, lp, "스왑 후")
     eth_eq = bals2["WETH"] + bals2["cbETH"] * st.price
     print(f"스왑 후 ETH-eq {eth_eq:.6f} (목표 구성비 cbETH {frac0:.1%})")
+    sync_hedge()  # ETH-eq 불변 스왑이라 보통 no-op — 갭 검증 겸 안전망
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     {"status": cmd_status, "close": cmd_close, "close-cbeth": cmd_close_cbeth,
-     "swap-to-weth": cmd_swap_to_weth, "swap-to-cbeth": cmd_swap_to_cbeth}[cmd]()
+     "swap-to-weth": cmd_swap_to_weth, "swap-to-cbeth": cmd_swap_to_cbeth,
+     "sync-hedge": sync_hedge}[cmd]()

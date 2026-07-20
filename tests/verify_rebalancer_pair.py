@@ -242,6 +242,52 @@ rb7._do_rerange(make_pos(0.02, 100.0, 0.0, 0.0), 190.0, 4247.0)
 check("weth_usdc 재배치 회귀: 예산 USD 그대로 + 타깃 token0 델타",
       lp7.mints == [(190.0, 190.0)] and near(rb7.hedge.targets[0], 0.02))
 
+
+# ── 7) 재배치 델타 규율: 실패·조회지연 경로에서도 헤지 동기화 ────
+class FailMintLP(FakeLP):
+    def mint_centered(self, budget_t1, slippage=0.01, usd_value=None):
+        raise RuntimeError("PSC")
+
+
+# mint 실패 → 지갑 실측 델타로 재헤지 + 예외는 그대로 전파 (_act가 기록하도록)
+lp8 = FailMintLP("cbeth_weth", ratio, None, balances=(0.05, 0.06))
+rb8 = Rebalancer(FakeSettings("cbeth_weth", lp_max_usdc=110.0, lp_range_pct=2.0),
+                 lp8, FakeHedge(FakeHedgeState(mark=mark)), FakeStore())
+raised8 = False
+try:
+    rb8._do_rerange(make_pos(0.01, 0.01, 0.0, 0.0), 120.0, mark)
+except RuntimeError:
+    raised8 = True
+check("재배치 mint 실패(cbeth): 지갑 델타(0.05×비율+0.06) 재헤지 + 예외 전파",
+      raised8 and len(rb8.hedge.targets) == 1
+      and near(rb8.hedge.targets[0], 0.05 * ratio + 0.06))
+
+lp9 = FailMintLP("weth_usdc", price, None, balances=(0.021, 100.0))
+rb9 = Rebalancer(FakeSettings("weth_usdc"), lp9,
+                 FakeHedge(FakeHedgeState(mark=4247.0)), FakeStore())
+raised9 = False
+try:
+    rb9._do_rerange(make_pos(0.02, 100.0, 0.0, 0.0), 190.0, 4247.0)
+except RuntimeError:
+    raised9 = True
+check("재배치 mint 실패(usd 페어): 지갑 WETH만 재헤지 (USDC 미포함)",
+      raised9 and rb9.hedge.targets == [0.021])
+
+# mint 성공 + 포지션 조회 지연(None) → 진입 경로와 같은 추정치로 즉시 동기화
+lp10 = FakeLP("cbeth_weth", ratio, None)
+rb10 = Rebalancer(FakeSettings("cbeth_weth", lp_max_usdc=110.0, lp_range_pct=2.0),
+                  lp10, FakeHedge(FakeHedgeState(mark=mark)), FakeStore())
+rb10._do_rerange(make_pos(0.01, 0.01, 0.0, 0.0), 120.0, mark)
+check("재배치 조회 지연(cbeth): 추정치 min($120,$110)/mark×1.0으로 즉시 동기화",
+      len(rb10.hedge.targets) == 1 and near(rb10.hedge.targets[0], 110.0 / mark))
+
+lp11 = FakeLP("weth_usdc", price, None)
+rb11 = Rebalancer(FakeSettings("weth_usdc"), lp11,
+                  FakeHedge(FakeHedgeState(mark=4247.0)), FakeStore())
+rb11._do_rerange(make_pos(0.02, 100.0, 0.0, 0.0), 190.0, 4247.0)
+check("재배치 조회 지연(usd 페어): 추정치 $190×0.42/eth_usd로 즉시 동기화",
+      len(rb11.hedge.targets) == 1 and near(rb11.hedge.targets[0], 190.0 * 0.42 / 4247.0))
+
 print()
 print("결과: " + ("전체 통과" if not fails else f"실패 {len(fails)}건: {fails}"))
 sys.exit(1 if fails else 0)
