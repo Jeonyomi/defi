@@ -230,7 +230,8 @@ class TgInterface:
                 f" _({trigger_room:.0%} 남으면 재배치)_",
                 f"├ 헤지 빈틈 {gap:.4f} ETH ≈ ${gap * r.eth_usd:,.0f} "
                 f"_(LP {r.lp_delta:.4f} / 숏 {r.hedge_size:.4f})_",
-                f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.0, 2.5)} _(2.0x면 경보)_",
+                f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.6, 2.8)} "
+                f"_(2.6x 1차·2.8x 필수입금 알림)_",
             ]
         out += [
             "",

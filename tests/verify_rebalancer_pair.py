@@ -288,6 +288,31 @@ rb11._do_rerange(make_pos(0.02, 100.0, 0.0, 0.0), 190.0, 4247.0)
 check("재배치 조회 지연(usd 페어): 추정치 $190×0.42/eth_usd로 즉시 동기화",
       len(rb11.hedge.targets) == 1 and near(rb11.hedge.targets[0], 190.0 * 0.42 / 4247.0))
 
+# --- 2단계 입금 알림 (2.6x 예고 / 2.8x 필수 / 3.0x 차단 상태) ---
+# 실측 스냅샷(2026-07-21 저녁) 기반: short 0.32 ETH, mark $1,941 → 노셔널 $621.1
+# 경보 블록은 포지션 보유 경로 끝에 있으므로 LP 보유 + 헤지 일치(드리프트≈0) 상태로 통과시킨다.
+def lev_alerts(account):
+    # 풀델타 = 0.15×비율 + 0.15 ≈ 0.3203 → short 0.32와 드리프트 0.1% (재헤지 미발동)
+    pos = make_pos(0.15, 0.15, 0.0, 0.0, ratio=0.3)
+    r, *_ = cycle("cbeth_weth", ratio, pos, (0.0, 0.0),
+                  FakeHedgeState(short=0.32, mark=1941.0, account=account))
+    return [a for a in r.alerts if "[1차" in a or "[2차" in a]
+
+a0 = lev_alerts(260.0)   # 2.39x — 무경보
+check("입금알림: 2.39x → 알림 없음", a0 == [])
+
+a1 = lev_alerts(223.2)   # 2.78x — 1차 예고, 2.4x 복귀에 $40
+check("입금알림: 2.78x → 1차 예고 + $40 계산",
+      len(a1) == 1 and "[1차" in a1[0] and "$40" in a1[0])
+
+a2 = lev_alerts(214.0)   # 2.90x — 2차 필수, $50 + 차단가 $1,957
+check("입금알림: 2.90x → 2차 필수 + $50 + 차단가 $1,957",
+      len(a2) == 1 and "[2차" in a2[0] and "$50" in a2[0] and "$1,957" in a2[0])
+
+a3 = lev_alerts(200.0)   # 3.11x — 이미 차단 상태 문구
+check("입금알림: 3.11x → 차단 상태 문구",
+      len(a3) == 1 and "[2차" in a3[0] and "차단된 상태" in a3[0])
+
 print()
 print("결과: " + ("전체 통과" if not fails else f"실패 {len(fails)}건: {fails}"))
 sys.exit(1 if fails else 0)

@@ -264,18 +264,33 @@ class Rebalancer:
             r.alerts.append(f"⚠️ 펀딩이 뒤집혔습니다 — 이제 받는 게 아니라 "
                             f"연 {abs(hs.funding_apr_recent):.1f}%씩 내는 중입니다.")
 
-        # 경보: 증거금 부족 (예산 규칙: HL 증거금 >= 헤지 노셔널의 60% = LP의 30%)
+        # 경보: 증거금 부족 — 2단계 입금 알림 (2026-07-21 MJ 요청).
+        #  1차 ⚠️(2.6x 초과): 입금 준비 예고. 2차 🚨(2.8x 초과): 반드시 입금.
+        #  입금액은 2.4x(전개 시점 수준) 복귀 기준으로 계산해 $10 단위 올림.
+        #  3x 도달 가격은 숏 평가손이 증거금을 깎는 효과까지 반영:
+        #  lev(p) = s·p / (av − s·(p − p0))  →  p(L) = L·(av + s·p0) / ((1+L)·s)
         notional = hs.short_size * hs.mark_px
         if notional > 0 and hs.account_value > 0:
             eff_lev = r.eff_lev
-            if eff_lev > 2.5:
+            topup = max(0.0, notional / 2.4 - hs.account_value)
+            topup = -(-topup // 10) * 10  # $10 단위 올림 — 송금하기 좋은 숫자
+            px_block = 3.0 * (hs.account_value + notional) / (4.0 * hs.short_size)
+            if eff_lev >= 3.0:
                 r.alerts.append(
-                    f"🚨 헤지 잔고가 부족합니다 — 레버리지 {eff_lev:.1f}x "
-                    f"(잔고 ${hs.account_value:,.0f}로 ${notional:,.0f}어치를 잡고 있음).\n"
-                    f"USDC를 넣어주세요. 이대로 두면 청산 위험이 커집니다.")
-            elif eff_lev > 2.0:
-                r.alerts.append(f"⚠️ 레버리지가 {eff_lev:.1f}x까지 올랐습니다 "
-                                f"(2.5x 넘으면 위험). USDC 보충을 권합니다.")
+                    f"🚨 [2차·필수] 레버리지 {eff_lev:.2f}x — 3x 한도 초과로 "
+                    f"봇 주문(재헤지·리밸런스)이 차단된 상태입니다.\n"
+                    f"지금 HL에 USDC ${topup:,.0f} 입금해야 정상 운용으로 돌아옵니다.")
+            elif eff_lev > 2.8:
+                r.alerts.append(
+                    f"🚨 [2차·필수] 레버리지 {eff_lev:.2f}x — 반드시 입금이 필요합니다.\n"
+                    f"ETH가 ${px_block:,.0f}(+{(px_block / hs.mark_px - 1) * 100:.1f}%)에 "
+                    f"닿으면 3x 한도로 봇 주문이 막힙니다.\n"
+                    f"HL에 USDC ${topup:,.0f} 입금 시 2.4x로 복귀합니다.")
+            elif eff_lev > 2.6:
+                r.alerts.append(
+                    f"⚠️ [1차·예고] 레버리지 {eff_lev:.2f}x — USDC 입금을 준비해 두세요.\n"
+                    f"ETH가 지금보다 더 오르면(2.8x 초과) 필수 입금 알림이 갑니다.\n"
+                    f"미리 ${topup:,.0f} 입금해 두면 2.4x로 내려가 여유가 생깁니다.")
         return r
 
     async def _act(self, r: CycleReport, kind: str, desc: str, fn) -> bool:
