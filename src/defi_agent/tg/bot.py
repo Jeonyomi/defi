@@ -125,6 +125,8 @@ class TgInterface:
 
     async def _edge(self) -> LpEdge | None:
         """LP 레그 경제성 (수수료 vs 감마손실). 실패해도 상태 표시를 막지 않는다."""
+        if self.s.hold_mode:
+            return None  # 보유 모드 — LP가 없으니 LP 수지 블록 자체가 무의미
         try:
             # 페어 전환 이전 스냅샷은 price 의미가 달라 섞으면 안 됨 (LP_PAIR_SINCE)
             since = max(int(time.time()) - 7 * 24 * 3600, self.s.lp_pair_since)
@@ -210,12 +212,24 @@ class TgInterface:
             f"`{_kst(r.ts)} KST`",
             "",
             f"💰 *총자산 ${r.equity:,.2f}*{self._chg_label(chg)}",
-            f"└ LP {self.rb.pair_label} ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f}"
-            f" · 지갑 ${r.wallet_usd:,.2f}",
+            (f"└ cbETH 보유 ${r.wallet_usd:,.2f} · 헤지 ${r.hl_account:,.2f}"
+             if self.s.hold_mode and r.lp_value <= 0 else
+             f"└ LP {self.rb.pair_label} ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f}"
+             f" · 지갑 ${r.wallet_usd:,.2f}"),
             "",
             f"📍 *안전 상태* · {self._px_label(r)}",
         ]
-        if r.lp_value <= 0:
+        if r.lp_value <= 0 and self.s.hold_mode:
+            # 보유 모드: 지갑 보유분이 포지션 — LP 줄 대신 보유/헤지 정합을 보여준다
+            gap = abs(r.lp_delta - r.hedge_size)
+            out += [
+                f"├ 보유 모드 — cbETH 단순보유 + 숏 헤지 (LP 없음)",
+                f"├ 헤지 빈틈 {gap:.4f} ETH ≈ ${gap * r.eth_usd:,.0f} "
+                f"_(보유 {r.lp_delta:.4f} / 숏 {r.hedge_size:.4f})_",
+                f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.6, 2.8)} "
+                f"_(2.6x 1차·2.8x 필수입금 알림)_",
+            ]
+        elif r.lp_value <= 0:
             out.append("└ LP 없음 — 진입 대기 중")
         else:
             # 레인지는 '남은 여유'로 뒤집어 보여준다 — 클수록 안전해야 직관적이다.

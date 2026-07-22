@@ -201,8 +201,31 @@ def cmd_swap_to_cbeth():
     sync_hedge()  # ETH-eq 불변 스왑이라 보통 no-op — 갭 검증 겸 안전망
 
 
+def cmd_hold_cbeth():
+    """cbETH 단순보유 전환 (2026-07-22 iter29 권고): 지갑 WETH 전량 → cbETH 스왑.
+
+    LP 재진입 없음 — 실행 후 .env에 HOLD_MODE=1을 넣고 봇을 재기동하면
+    rebalancer가 지갑 ETH-eq 델타 기준으로 헤지만 유지한다.
+    ETH-eq 불변 스왑이라 sync-hedge는 보통 no-op — 갭 검증 겸 안전망.
+    """
+    s, c, lp = build("cbeth_weth")
+    st = lp.pool_state()
+    bals = print_wallet(c, lp, "스왑 전")
+    weth = bals["WETH"]
+    if weth * st.price < 0.0005:  # < ~$1 상당 — 스왑 실익 없음
+        print(f"WETH 잔고 {weth:.6f} — 소액이라 스왑 생략")
+        sync_hedge()
+        return
+    min_out = int(weth / st.price * 0.995 * 1e18)
+    print(f"WETH {weth:.6f} 전량 → cbETH (비율 {st.price:.4f}, min_out {min_out / 1e18:.6f})")
+    lp.swap(lp.t1_addr, int(weth * 1e18), min_out)  # WETH→cbETH
+    print_wallet(c, lp, "스왑 후")
+    sync_hedge()
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     {"status": cmd_status, "close": cmd_close, "close-cbeth": cmd_close_cbeth,
      "swap-to-weth": cmd_swap_to_weth, "swap-to-cbeth": cmd_swap_to_cbeth,
+     "hold-cbeth": cmd_hold_cbeth,
      "sync-hedge": sync_hedge}[cmd]()

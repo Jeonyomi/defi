@@ -141,6 +141,10 @@ class Rebalancer:
             r.lp_value = val_t1 * to_usd
             r.owed_usd = owed_t1 * to_usd
             r.range_ratio = pos.range_ratio
+        elif self.s.hold_mode:
+            # 보유 모드: LP 없이 지갑의 페어 토큰이 곧 포지션. 델타를 지갑 ETH-eq로
+            # 잡으면 아래 드리프트 분기(3)가 기존 로직 그대로 숏을 중립에 유지한다.
+            r.lp_delta = bal0 * st.price + bal1 if self.full_delta else bal0
         r.wallet_usd = (bal0 * st.price + bal1) * to_usd
         r.hl_account = hs.account_value
         r.hedge_upnl = hs.unrealized_pnl
@@ -172,8 +176,9 @@ class Rebalancer:
             r.alerts.append("🚨 USD 환산가를 얻지 못했습니다 — 이번 사이클은 관측만 합니다.")
             return r
 
-        # 1) 신규 진입
-        if pos is None:
+        # 1) 신규 진입 — 보유 모드에서는 건너뛴다 (LP 없음이 정상 상태라 mint 금지,
+        #    아래 드리프트 분기가 지갑 델타 기준으로 헤지만 관리)
+        if pos is None and not self.s.hold_mode:
             deployable = min(r.wallet_usd, self.s.lp_max_usdc)
             if deployable >= 100:
                 # 헤지 레그 증거금 선확인 — 없으면 LP만 잡혀 단방향 노출이 되므로 진입 보류.
@@ -207,8 +212,8 @@ class Rebalancer:
                                 f"(지갑 ${deployable:,.0f}, 최소 $100 필요).")
             return r
 
-        # 2) 레인지 재배치
-        if pos.range_ratio >= self.s.rerange_trigger:
+        # 2) 레인지 재배치 (보유 모드는 pos가 없어 통과)
+        if pos and pos.range_ratio >= self.s.rerange_trigger:
             cooldown_ok = time.time() - self._last_rerange_ts > self.s.rerange_cooldown_h * 3600
             if cooldown_ok:
                 usd = r.lp_value

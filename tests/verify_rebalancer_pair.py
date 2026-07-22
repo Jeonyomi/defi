@@ -17,6 +17,7 @@ from defi_agent.lp.aerodrome import PoolState, Position
 
 class FakeSettings:
     dry_run = True
+    hold_mode = False
     lp_range_pct = 35.0
     lp_max_usdc = 500.0
     rerange_trigger = 0.90

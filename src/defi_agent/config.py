@@ -31,6 +31,7 @@ class Settings:
     lp_tick_spacing: int
     lp_range_pct: float
     lp_max_usdc: float
+    hold_mode: bool
     rerange_trigger: float
     rerange_cooldown_h: float
     hl_api_private_key: str
@@ -77,6 +78,9 @@ def load_settings() -> Settings:
         lp_tick_spacing=int(env("LP_TICK_SPACING", "100")),
         lp_range_pct=float(env("LP_RANGE_PCT", "35")),
         lp_max_usdc=float(env("LP_MAX_USDC", "5000")),
+        # 보유 모드: LP에 들어가지 않고 지갑의 페어 토큰(cbETH 등)을 그대로 보유,
+        # 숏 헤지로 델타중립만 유지한다. LP 수수료 0 실측에 따른 전환 (2026-07-22).
+        hold_mode=env("HOLD_MODE", "0").lower() in ("1", "true"),
         rerange_trigger=float(env("RERANGE_TRIGGER", "0.90")),
         rerange_cooldown_h=float(env("RERANGE_COOLDOWN_H", "12")),
         hl_api_private_key=get_key("hl-api"),
