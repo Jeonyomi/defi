@@ -247,12 +247,14 @@ class TgInterface:
                 f"└ 레버리지 {r.eff_lev:.2f}x {_mark(r.eff_lev, 2.6, 2.8)} "
                 f"_(2.6x 1차·2.8x 필수입금 알림)_",
             ]
-        out += [
-            "",
-            "💵 *들어오는 돈*",
+        out += ["", "💵 *들어오는 돈*"]
+        if not (self.s.hold_mode and r.lp_value <= 0):
+            # 보유 모드엔 LP가 없어 미수령 수수료 자체가 존재하지 않는다 — LP 모드에서만 표기.
             # 소액 구간에선 센트 반올림으로 누적이 안 보여 4자리까지 표기
-            f"├ 쌓인 수수료 ${r.owed_usd:,.2f} _(아직 안 받음)_" if r.owed_usd >= 1
-            else f"├ 쌓인 수수료 ${r.owed_usd:.4f} _(아직 안 받음)_",
+            out.append(
+                f"├ 쌓인 수수료 ${r.owed_usd:,.2f} _(아직 안 받음)_" if r.owed_usd >= 1
+                else f"├ 쌓인 수수료 ${r.owed_usd:.4f} _(아직 안 받음)_")
+        out += [
             f"├ 펀딩 {r.funding_apr:+.1f}%/년 {'받는 중 ✅' if r.funding_apr >= 0 else '내는 중 ⚠️'}",
             f"└ 숏 평가손익 {'+' if r.hedge_upnl >= 0 else '-'}${abs(r.hedge_upnl):,.2f}",
         ]
