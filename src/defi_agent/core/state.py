@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS kv (
     ts INTEGER NOT NULL,
     val TEXT NOT NULL
 );
+-- 투입원금 원장. 누적손익(= 총자산 - 투입원금)의 분모이자, 총자산 변화율로는
+-- 절대 대체할 수 없는 값 — 입금은 총자산을 올리지만 수익이 아니기 때문이다.
+-- 스냅샷 점프로 입출금을 추정하는 방법(_trim_to_last_flow)은 표시용 근사일 뿐,
+-- 실제 07-20 이력에서 LP 재배치와 입금이 같은 사이클에 겹쳐 금액이 어긋났다.
+-- 그래서 사람이 확인한 실제 송금만 여기에 적는다 (defi_agent.flows CLI).
+CREATE TABLE IF NOT EXISTS flows (
+    ts INTEGER PRIMARY KEY,   -- 송금 시각 (unix)
+    usd REAL NOT NULL,        -- 입금 +, 출금 -
+    note TEXT NOT NULL DEFAULT ''
+);
 """
 
 # 기존 DB에 없는 컬럼을 덧붙인다 (ALTER는 중복 시 에러이므로 존재 확인 후 실행).
@@ -80,6 +90,26 @@ class Store:
             cur = await db.execute(
                 "SELECT ts, price, owed_weth, owed_usdc, lp_weth, lp_usdc, mark_px "
                 "FROM snapshots WHERE ts >= ? ORDER BY ts", (since_ts,))
+            return await cur.fetchall()
+
+    async def add_flow(self, ts: int, usd: float, note: str = ""):
+        """입출금 1건 기록. 같은 ts는 덮어쓴다 (재입력으로 중복 계상되지 않게)."""
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute("INSERT OR REPLACE INTO flows (ts, usd, note) VALUES (?,?,?)",
+                             (int(ts), float(usd), note))
+            await db.commit()
+
+    async def del_flow(self, ts: int) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("DELETE FROM flows WHERE ts = ?", (int(ts),))
+            await db.commit()
+            return cur.rowcount
+
+    async def flows(self) -> list[tuple[int, float, str]]:
+        """시간순 입출금 원장. 비어 있으면 [] — 호출부는 '미등록'으로 표시해야 하며,
+        0으로 간주해 총자산 전체를 수익으로 표기해선 안 된다."""
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT ts, usd, note FROM flows ORDER BY ts")
             return await cur.fetchall()
 
     async def set_kv(self, key: str, val: str):

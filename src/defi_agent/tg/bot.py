@@ -112,6 +112,29 @@ class TgInterface:
             label = "입금 이후 " + label
         return f"  _{label} {pct:+.2f}%_"
 
+    async def _profit(self, equity: float) -> tuple[float, float, float, float] | None:
+        """(누적손익 USD, 수익률 %, 투입원금 USD, 운용일수). 원장이 비면 None.
+
+        24h 변화율과 달리 이건 '시작 준비금 대비 지금까지 번 돈'이다.
+        분모는 추정하지 않는다 — flows 원장에 사람이 확인해 넣은 실제 송금만 쓴다.
+        원장이 비었을 때 0으로 갈음하면 총자산 전체가 수익으로 둔갑하므로 None.
+        """
+        rows = await self.store.flows()
+        invested = sum(u for _, u, _ in rows)
+        if not rows or invested <= 0:
+            return None
+        return (equity - invested, (equity / invested - 1) * 100, invested,
+                (time.time() - rows[0][0]) / 86400)
+
+    @staticmethod
+    def _profit_line(p: tuple[float, float, float, float] | None) -> str:
+        if p is None:
+            return "└ 누적손익 _미집계 — 투입원금 원장이 비었습니다 (`flows add`)_"
+        pnl, pct, invested, days = p
+        sign = "+" if pnl >= 0 else "-"
+        return (f"└ *누적손익 {sign}${abs(pnl):,.2f}* ({pct:+.2f}%) "
+                f"_· 투입 ${invested:,.2f} · {days:.0f}일_")
+
     def _vol_ref(self) -> tuple[float, int] | None:
         """30일 실현 변동성. 캔들 조회는 느리고 30일 sigma는 분 단위로 안 변하므로 1h 캐시."""
         now = time.time()
@@ -206,16 +229,18 @@ class TgInterface:
         return f"{self.rb.pair_label} {r.price:.4f} · ETH ${r.eth_usd:,.2f}"
 
     def _status_text(self, r: CycleReport, chg: tuple[float, float, bool] | None = None,
-                     title: str = "상태", edge: LpEdge | None = None) -> str:
+                     title: str = "상태", edge: LpEdge | None = None,
+                     profit: tuple[float, float, float, float] | None = None) -> str:
         out = [
             f"📊 *{title}* · {self._mode()}",
             f"`{_kst(r.ts)} KST`",
             "",
             f"💰 *총자산 ${r.equity:,.2f}*{self._chg_label(chg)}",
-            (f"└ cbETH 보유 ${r.wallet_usd:,.2f} · 헤지 ${r.hl_account:,.2f}"
+            (f"├ cbETH 보유 ${r.wallet_usd:,.2f} · 헤지 ${r.hl_account:,.2f}"
              if self.s.hold_mode and r.lp_value <= 0 else
-             f"└ LP {self.rb.pair_label} ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f}"
+             f"├ LP {self.rb.pair_label} ${r.lp_value:,.2f} · 헤지 ${r.hl_account:,.2f}"
              f" · 지갑 ${r.wallet_usd:,.2f}"),
+            self._profit_line(profit),
             "",
             f"📍 *안전 상태* · {self._px_label(r)}",
         ]
@@ -262,18 +287,33 @@ class TgInterface:
         return "\n".join(out)
 
     async def _pnl_text(self) -> str:
+        # 머리에 누적손익을 둔다 — 아래 관측 구간 수익률은 마지막 입출금 이후만 보므로
+        # 그것만 보면 '시작 준비금 대비 지금 얼마인가'라는 진짜 질문에 답하지 못한다.
+        head: list[str] = []
+        last = self.last_report
+        if last:
+            p = await self._profit(last.equity)
+            if p:
+                pnl, pct, invested, days = p
+                head = [f"💰 *누적손익 {'+' if pnl >= 0 else '-'}${abs(pnl):,.2f}* ({pct:+.2f}%)",
+                        f"투입 ${invested:,.2f} → 현재 ${last.equity:,.2f} · 운용 {days:.1f}일",
+                        (f"연환산 {pct / days * 365:+.1f}%" if days >= 7
+                         else "_운용 7일 미만 — 연환산 생략_"),
+                        ""]
         # equity=0인 진입 전 스냅샷은 제외 — 베이스라인이 0이면 수익률이 무의미
         series = [(ts, e) for ts, e in
                   await self.store.equity_series(int(time.time()) - 30 * 86400) if e > 0]
         series, flow = _trim_to_last_flow(series)  # 입금을 수익으로 세지 않기 위해
+        # 관측 구간이 짧아도 누적손익은 유효하다 — head를 버리지 않고 함께 돌려준다
         if len(series) < 2:
-            return "스냅샷 부족 — 유효 스냅샷 2개 이상 필요"
+            return "\n".join(head + ["스냅샷 부족 — 유효 스냅샷 2개 이상 필요"])
         e0, e1 = series[0][1], series[-1][1]
         days = (series[-1][0] - series[0][0]) / 86400
         if days < 0.02:  # ~30분 미만이면 연환산이 무의미한 배율로 튄다
-            return f"*PnL* 관측 구간 부족 ({days * 24:.1f}h)\n현재 총자산 ${e1:,.2f}"
+            return "\n".join(head + [f"*PnL* 관측 구간 부족 ({days * 24:.1f}h)",
+                                     f"현재 총자산 ${e1:,.2f}"])
         ret = (e1 / e0 - 1) * 100
-        out = [f"📈 *LP 헤지 PnL* · 관측 {days:.1f}일",
+        out = head + [f"📈 *LP 헤지 PnL* · 관측 {days:.1f}일",
                f"${e0:,.2f} → *${e1:,.2f}*  ({ret:+.2f}%)",
                f"연환산 {ret / days * 365:+.1f}% APR"]
         if flow:
@@ -315,7 +355,8 @@ class TgInterface:
             if not r:
                 await m.answer("아직 사이클 실행 전")
                 return
-            await m.answer(self._status_text(r, await self._change(24), edge=await self._edge()),
+            await m.answer(self._status_text(r, await self._change(24), edge=await self._edge(),
+                                             profit=await self._profit(r.equity)),
                            parse_mode="Markdown")
 
         @self.dp.message(Command("pnl"))
@@ -383,7 +424,8 @@ class TgInterface:
             await self.store.set_kv(
                 "status_text",
                 self._status_text(r, await self._change(24), title="LP 헤지 상태",
-                                  edge=await self._edge()))
+                                  edge=await self._edge(),
+                                  profit=await self._profit(r.equity)))
             await self.store.set_kv("pnl_text", await self._pnl_text())
         except Exception:  # noqa: BLE001
             log.exception("상태 발행 실패 — /lp가 직전 값을 보게 된다")
@@ -415,7 +457,8 @@ class TgInterface:
             return
         self._status_last = r.ts
         await self.notify(self._status_text(r, await self._change(24), title="정기 상태",
-                                            edge=await self._edge()))
+                                            edge=await self._edge(),
+                                            profit=await self._profit(r.equity)))
 
     async def daily_report(self):
         r = self.last_report
@@ -423,7 +466,8 @@ class TgInterface:
             return
         self._status_last = r.ts  # 리포트 직후 정기 상태가 겹쳐 나가지 않도록
         await self.notify(self._status_text(r, await self._change(24), title="일일 리포트",
-                                            edge=await self._edge()))
+                                            edge=await self._edge(),
+                                            profit=await self._profit(r.equity)))
 
     async def run_polling(self):
         """명령 폴링 — 기본 비활성 (TG_POLLING=true일 때만).
